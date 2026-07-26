@@ -6,6 +6,17 @@ import { getPayload } from "payload";
 
 const takeString = (value: FormDataEntryValue | null) => (typeof value === "string" ? value.trim() : "");
 
+const takeOptionalRelationshipID = (value: FormDataEntryValue | null) => {
+  const rawValue = takeString(value);
+
+  if (!rawValue) {
+    return undefined;
+  }
+
+  const relationshipID = Number(rawValue);
+  return Number.isInteger(relationshipID) && relationshipID > 0 ? relationshipID : undefined;
+};
+
 const createUploadedProfilePicture = async ({
   file,
   fullName,
@@ -50,8 +61,8 @@ export async function registerPublicMember(formData: FormData) {
   const whatsappNumber = takeString(formData.get("whatsappNumber"));
   const dateOfBirth = takeString(formData.get("dateOfBirth"));
   const dateJoined = takeString(formData.get("dateJoined"));
-  const department = Number(takeString(formData.get("department")));
-  const preferredDepartment = Number(takeString(formData.get("preferredDepartment")));
+  const department = takeOptionalRelationshipID(formData.get("department"));
+  const preferredDepartment = takeOptionalRelationshipID(formData.get("preferredDepartment"));
 
   if (!firstName || !lastName) {
     redirect("/members/member-register?saved=invalid");
@@ -69,14 +80,14 @@ export async function registerPublicMember(formData: FormData) {
       data: {
         dateJoined: dateJoined || undefined,
         dateOfBirth: dateOfBirth || undefined,
-        department: Number.isFinite(department) ? department : undefined,
+        department,
         email: email || undefined,
         firstName,
         isNewComer: true,
         lastName,
         middleName: middleName || undefined,
         phoneNumber: phoneNumber || undefined,
-        preferredDepartment: Number.isFinite(preferredDepartment) ? preferredDepartment : undefined,
+        preferredDepartment,
         profilePicture,
         whatsappNumber: whatsappNumber || undefined,
       },
