@@ -709,14 +709,18 @@ select {
   .site-nav {
     position: fixed;
     inset: 0;
+    min-height: 100dvh;
     background: rgba(0, 0, 0, 0.98);
     backdrop-filter: blur(15px);
     flex-direction: column;
     justify-content: center;
     align-items: center;
     gap: 3rem;
-    padding: 2rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: calc(5rem + 2rem) 2rem max(2rem, env(safe-area-inset-bottom));
     opacity: 0;
+    pointer-events: none;
     visibility: hidden;
     transform: translateY(-10px);
     transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
@@ -725,6 +729,7 @@ select {
 
   .site-nav.is-open {
     opacity: 1;
+    pointer-events: auto;
     visibility: visible;
     transform: translateY(0);
   }
@@ -744,6 +749,31 @@ select {
     font-size: 1.125rem;
     padding: 0.75rem 2.5rem;
     border-width: 2px;
+  }
+}
+
+@media (max-width: 480px) {
+  .site-header-inner {
+    min-height: 4.5rem;
+    padding: 0.75rem 0;
+  }
+
+  .brand img {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .brand-copy span {
+    font-size: 0.75rem;
+  }
+
+  .site-nav {
+    gap: 2rem;
+    padding-top: calc(4.5rem + 2rem);
+  }
+
+  .nav-links {
+    gap: 1.5rem;
   }
 }
 

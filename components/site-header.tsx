@@ -16,11 +16,21 @@ export function SiteHeader() {
 
   // Prevent scrolling when menu is open
   useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "unset";
-    }
+    if (!isOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
   }, [isOpen]);
 
   return (
@@ -36,8 +46,10 @@ export function SiteHeader() {
 
         <button
           className="menu-toggle"
-          onClick={() => setIsOpen(!isOpen)}
+          type="button"
+          onClick={() => setIsOpen((open) => !open)}
           aria-expanded={isOpen}
+          aria-controls="site-navigation"
           aria-label="Toggle navigation"
         >
           {isOpen ? (
@@ -54,7 +66,7 @@ export function SiteHeader() {
           )}
         </button>
 
-        <nav className={`site-nav ${isOpen ? "is-open" : ""}`} aria-label="Primary">
+        <nav id="site-navigation" className={`site-nav ${isOpen ? "is-open" : ""}`} aria-label="Primary">
           <div className="nav-links">
             {navigation.map((item) => {
               const current =
@@ -66,6 +78,7 @@ export function SiteHeader() {
                 <Link
                   key={item.href}
                   href={item.href}
+                  onClick={() => setIsOpen(false)}
                   aria-current={current ? "page" : undefined}
                 >
                   {item.label.toUpperCase()}
@@ -75,7 +88,7 @@ export function SiteHeader() {
           </div>
           
           <div className="nav-actions">
-            <Link href="/admin/login" className="btn-login">
+            <Link href="/admin/login" className="btn-login" onClick={() => setIsOpen(false)}>
               LOGIN
             </Link>
           </div>
