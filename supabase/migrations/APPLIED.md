@@ -30,3 +30,16 @@ checks under the `anon` role verified insertion, updating the same attendance ro
 and rejection of an invalid secret. Test rows and the temporary test ID default
 were rolled back before committing only the function replacement. The real ID
 sequence was not advanced, and existing attendance records were preserved.
+
+### Follow-up: attendance ID sequence
+
+Live saves still failed because `attendance_records_id_seq` was at `2724` while
+existing attendance IDs reached `2868`. The earlier function test used a temporary
+ID default and therefore did not exercise the real sequence. Under a table write
+lock, the sequence was advanced to the greater of its current value and the
+maximum existing ID (`2868`), making the next generated ID `2869`.
+
+Production HTTP POST verification then returned `200` for both marking and
+unmarking an isolated future-date attendance record. The same record ID was
+returned for both operations, and its persisted state was checked. The single
+test record was removed immediately afterward; no real attendance was changed.
