@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import type { Admin } from "@/payload-types";
-import { hasAdminRole, isDepartmentLeadOnly, type AdminRole } from "@/payload/utilities/adminRoles";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { hasAnyRole, isDepartmentLeadOnly } from "@/lib/auth/authorization";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import type { AdminRole } from "@/lib/domain/types";
 import styles from "./admin-dashboard.module.css";
 
 export const dynamic = "force-dynamic";
@@ -215,10 +215,9 @@ export default async function AdminDashboardPage({
   }>;
 }) {
   const params = await searchParams;
-  const { req } = await getAdminContext("custom-admin-dashboard");
-  const user = req.user as Admin | null;
+  const actor = await requireServerAdminActor();
 
-  if (isDepartmentLeadOnly(user)) {
+  if (isDepartmentLeadOnly(actor)) {
     redirect("/department-head/reports/submit");
   }
 
@@ -284,7 +283,7 @@ export default async function AdminDashboardPage({
       title: "Absentee Tracking",
     },
   ];
-  const visibleCards = cards.filter((card) => hasAdminRole(user, card.allowedRoles));
+  const visibleCards = cards.filter((card) => hasAnyRole(actor, card.allowedRoles));
 
   return (
     <div className={styles.dashboard}>
@@ -299,7 +298,7 @@ export default async function AdminDashboardPage({
           <p className={styles.eyebrow}>Internal Operations</p>
           <h2 className={styles.title}>Admin Dashboard</h2>
           <p className={styles.description}>
-            Welcome back, {user?.name || user?.email || "Operations Team"}. This panel gives you access to custom member registers, 
+            Welcome back, {actor.name || actor.email || "Operations Team"}. This panel gives you access to custom member registers,
             attendance logs, and department reporting configurations.
           </p>
         </div>

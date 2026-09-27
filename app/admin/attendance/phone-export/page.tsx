@@ -1,8 +1,11 @@
 import Link from "next/link";
-import type { Where } from "payload";
 import { AdminPagination } from "@/components/admin-pagination";
-import type { AttendanceRecord, Department, Member, Service } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import type { Member } from "@/lib/domain/types";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments";
+import { getServerServiceRepository } from "@/lib/repositories/server/services";
+import { collectAllPages } from "@/lib/repositories/pagination";
 import styles from "../page.module.css";
 
 type SearchParams = Promise<{
@@ -12,11 +15,6 @@ type SearchParams = Promise<{
   query?: string | string[];
   service?: string | string[];
 }>;
-
-type AttendanceRecordWithRelations = AttendanceRecord & {
-  member: Member;
-  service?: Service | number | null;
-};
 
 type PhoneExportRow = {
   departmentName: string;
@@ -53,59 +51,6 @@ const formatDateValue = (value: string) => {
   }).format(parsed);
 };
 
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
-
-  return department.name;
-};
-
-const buildAttendanceWhere = ({
-  date,
-  serviceID,
-}: {
-  date: string;
-  serviceID?: number;
-}): Where => {
-  if (serviceID) {
-    return {
-      and: [
-        {
-          present: {
-            equals: true,
-          },
-        },
-        {
-          service: {
-            equals: serviceID,
-          },
-        },
-      ],
-    };
-  }
-
-  return {
-    and: [
-      {
-        date: {
-          equals: date,
-        },
-      },
-      {
-        present: {
-          equals: true,
-        },
-      },
-      {
-        service: {
-          exists: false,
-        },
-      },
-    ],
-  };
-};
-
 const includesQuery = (member: Member, query: string) => {
   const trimmed = query.trim().toLowerCase();
 
@@ -136,80 +81,44 @@ export default async function AttendancePhoneExportPage({
   const currentPage = clampPage(takeString(params.page));
   const pageSize = 40;
 
-  const { req } = await getAdminContext("attendance-phone-export-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const [servicesResult, departmentsResult] = await Promise.all([
-    payload.find({
-      collection: "services",
-      depth: 0,
-      limit: 24,
-      pagination: false,
-      req,
-      sort: "-date",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "departments",
-      depth: 0,
-      limit: 100,
-      pagination: false,
-      req,
-      sort: "name",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
+  await requireServerAdminActor(["admin", "staff"]);
+  const [serviceRepository, departmentRepository, attendanceRepository] =
+    await Promise.all([
+      getServerServiceRepository(),
+      getServerDepartmentRepository(),
+      getServerAttendanceRepository(),
+    ]);
+  const [services, departments] = await Promise.all([
+    serviceRepository.findActive(),
+    departmentRepository.findActive(),
   ]);
 
-  const services = servicesResult.docs as Service[];
-  const departments = departmentsResult.docs as Department[];
   const departmentNameByID = new Map(departments.map((department) => [department.id, department.name]));
   const selectedService = requestedService
     ? services.find((service) => String(service.id) === requestedService)
     : undefined;
   const activeDate = selectedService?.date ?? requestedDate;
-  const attendanceWhere = buildAttendanceWhere({
-    date: activeDate,
-    serviceID: selectedService?.id,
-  });
   const selectedDepartment = requestedDepartment
     ? departments.find((department) => String(department.id) === requestedDepartment)
     : undefined;
 
-  const attendanceResult = await payload.find({
-    collection: "attendance-records",
-    depth: 1,
-    limit: 5000,
-    pagination: false,
-    req,
-    sort: "member",
-    where: attendanceWhere,
-  });
+  const attendanceRecords = await collectAllPages(({ limit, page }) =>
+    attendanceRepository.listWithMembers({
+      ...(selectedService
+        ? { serviceId: selectedService.id }
+        : { date: activeDate, serviceId: null }),
+      limit,
+      page,
+      present: true,
+    }));
 
   const rows = new Map<number, PhoneExportRow>();
 
-  for (const record of attendanceResult.docs as AttendanceRecordWithRelations[]) {
+  for (const record of attendanceRecords) {
     const member = record.member;
 
-    if (!member || typeof member === "number") {
+    if (selectedDepartment && member.departmentId !== selectedDepartment.id) {
       continue;
-    }
-
-    if (selectedDepartment) {
-      const departmentID = typeof member.department === "number" ? member.department : member.department?.id;
-
-      if (departmentID !== selectedDepartment.id) {
-        continue;
-      }
     }
 
     if (!includesQuery(member, query)) {
@@ -224,10 +133,7 @@ export default async function AttendancePhoneExportPage({
     }
 
     rows.set(member.id, {
-      departmentName:
-        typeof member.department === "number"
-          ? departmentNameByID.get(member.department) ?? "Unassigned"
-          : getDepartmentName(member.department),
+      departmentName: departmentNameByID.get(member.departmentId ?? -1) ?? "Unassigned",
       email: member.email ?? "",
       fullName: member.fullName ?? "Unnamed member",
       phone,

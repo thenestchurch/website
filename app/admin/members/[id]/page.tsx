@@ -1,8 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { AttendanceRecord, Department, Media, Member } from "@/payload-types";
-import { hasAdminRole } from "@/payload/utilities/adminRoles";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { hasAnyRole } from "@/lib/auth/authorization";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import type { Member } from "@/lib/domain/types";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance";
+import { getServerMediaRepository } from "@/lib/repositories/server/media";
+import { getServerMemberRepository } from "@/lib/repositories/server/members";
+import { getServerServiceRepository } from "@/lib/repositories/server/services";
 import styles from "../members.module.css";
 
 type PageProps = {
@@ -12,18 +16,6 @@ type PageProps = {
   searchParams: Promise<{
     updated?: string | string[];
   }>;
-};
-
-type AttendanceRecordWithMember = AttendanceRecord & {
-  member: Member;
-};
-
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
-
-  return department.name;
 };
 
 const formatDate = (value: string | null | undefined) => {
@@ -45,14 +37,6 @@ const formatDate = (value: string | null | undefined) => {
 const getInitials = (member: Member) =>
   `${member.firstName?.[0] ?? ""}${member.lastName?.[0] ?? ""}`.toUpperCase() || "M";
 
-const getMediaUrl = (media: number | Media | null | undefined) => {
-  if (!media || typeof media === "number") {
-    return null;
-  }
-
-  return media.url ?? null;
-};
-
 export const dynamic = "force-dynamic";
 
 export default async function MemberDetailPage({
@@ -67,35 +51,26 @@ export default async function MemberDetailPage({
     notFound();
   }
 
-  const { req } = await getAdminContext("custom-admin-member-detail-page", {
-    allowedRoles: ["admin", "staff", "absentee-viewer"],
-  });
-  const payload = req.payload;
-  const canManageMembers = hasAdminRole(req.user, ["admin", "staff"]);
+  const actor = await requireServerAdminActor(["admin", "staff", "absentee-viewer"]);
+  const canManageMembers = hasAnyRole(actor, ["admin", "staff"]);
 
   try {
-    const member = (await payload.findByID({
-      collection: "members",
-      depth: 1,
-      id: memberID,
-      req,
-    })) as Member;
-
-    const attendanceResult = await payload.find({
-      collection: "attendance-records",
-      depth: 1,
-      limit: 500,
-      pagination: false,
-      req,
-      sort: "-date",
-      where: {
-        member: {
-          equals: memberID,
-        },
-      },
-    });
-
-    const attendanceRecords = attendanceResult.docs as AttendanceRecordWithMember[];
+    const [memberRepository, attendanceRepository, serviceRepository, mediaRepository] = await Promise.all([
+      getServerMemberRepository(),
+      getServerAttendanceRepository(),
+      getServerServiceRepository(),
+      getServerMediaRepository(actor),
+    ]);
+    const [member, attendancePage, services] = await Promise.all([
+      memberRepository.findById(memberID),
+      attendanceRepository.list({ limit: 500, memberId: memberID, page: 1 }),
+      serviceRepository.findAll(),
+    ]);
+    if (!member) notFound();
+    const media = member.profilePictureId === null ? null : await mediaRepository.findById(member.profilePictureId);
+    const mediaUrl = media?.url ?? member.legacyProfilePictureUrl;
+    const attendanceRecords = attendancePage.docs;
+    const servicesById = new Map(services.map((service) => [service.id, service.name]));
 
     return (
       <main className={styles.page}>
@@ -129,9 +104,9 @@ export default async function MemberDetailPage({
             <div className={styles.profileBody}>
               <div className={styles.avatarRow}>
                 <div className={styles.avatar}>
-                  {getMediaUrl(member.profilePicture) ? (
+                  {mediaUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img alt={member.fullName ?? "Member"} src={getMediaUrl(member.profilePicture) ?? ""} />
+                    <img alt={member.fullName ?? "Member"} src={mediaUrl} />
                   ) : (
                     <span>{getInitials(member)}</span>
                   )}
@@ -191,11 +166,11 @@ export default async function MemberDetailPage({
                   <div className={styles.detailList}>
                     <div className={styles.detailRow}>
                       <span className={styles.detailTerm}>Department</span>
-                      <span className={styles.detailValue}>{getDepartmentName(member.department)}</span>
+                      <span className={styles.detailValue}>{member.department?.name ?? "Unassigned"}</span>
                     </div>
                     <div className={styles.detailRow}>
                       <span className={styles.detailTerm}>Preferred Department</span>
-                      <span className={styles.detailValue}>{getDepartmentName(member.preferredDepartment)}</span>
+                      <span className={styles.detailValue}>{member.preferredDepartment?.name ?? "Unassigned"}</span>
                     </div>
                     <div className={styles.detailRow}>
                       <span className={styles.detailTerm}>Date Joined</span>
@@ -281,9 +256,9 @@ export default async function MemberDetailPage({
                             </span>
                           </td>
                           <td>
-                            {attendance.service && typeof attendance.service !== "number"
-                              ? attendance.service.name
-                              : "Date-only record"}
+                            {attendance.serviceId === null
+                              ? "Date-only record"
+                              : servicesById.get(attendance.serviceId) ?? "Unknown service"}
                           </td>
                           <td>{attendance.notes || "-"}</td>
                         </tr>

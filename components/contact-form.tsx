@@ -12,13 +12,13 @@ export function ContactForm() {
     setStatus("");
 
     const formData = new FormData(event.currentTarget);
-    const payload = Object.fromEntries(formData.entries());
+    const formValues = Object.fromEntries(formData.entries());
 
     try {
       const response = await fetch("/api/contact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(formValues),
       });
 
       const data = (await response.json()) as { message?: string };

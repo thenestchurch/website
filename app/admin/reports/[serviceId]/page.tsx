@@ -1,7 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { AttendanceRecord, Department, Member, Service, ServiceReport } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { HoneypotField } from "@/components/honeypot-field";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import { hasAnyRole } from "@/lib/auth/authorization.ts";
+import { getServerAdminSummaryRepository } from "@/lib/repositories/server/admin-summaries.ts";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerMemberRepository } from "@/lib/repositories/server/members.ts";
+import { getServerReportRepository } from "@/lib/repositories/server/reports.ts";
+import { getServerServiceRepository } from "@/lib/repositories/server/services.ts";
+import { collectAllPages } from "@/lib/repositories/pagination.ts";
+import { deleteServiceReport, setServiceReportApproval } from "../actions";
 import styles from "../reports.module.css";
 
 type PageProps = {
@@ -11,20 +20,8 @@ type PageProps = {
   searchParams: Promise<{
     created?: string | string[];
     saved?: string | string[];
+    updated?: string | string[];
   }>;
-};
-
-type AttendanceRecordWithMember = AttendanceRecord & {
-  member: Member;
-};
-
-type ServiceReportWithRelations = ServiceReport & {
-  department: Department;
-  service: Service;
-  submittedBy?: {
-    email?: string | null;
-    name?: string | null;
-  } | number | null;
 };
 
 const takeString = (value: string | string[] | undefined) =>
@@ -34,14 +31,6 @@ const formatDate = (value: string) =>
   new Intl.DateTimeFormat("en-NG", {
     dateStyle: "long",
   }).format(new Date(value));
-
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
-
-  return department.name;
-};
 
 export const dynamic = "force-dynamic";
 
@@ -53,88 +42,65 @@ export default async function ReportOverviewPage({
   const query = await searchParams;
   const saved = takeString(query.saved);
   const created = takeString(query.created);
+  const updated = takeString(query.updated);
   const serviceID = Number(serviceId);
 
   if (!Number.isFinite(serviceID)) {
     notFound();
   }
 
-  const { req } = await getAdminContext("custom-admin-report-overview-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const canDeleteReports = hasAnyRole(actor, ["admin"]);
+  const [
+    serviceRepository,
+    reportRepository,
+    attendanceRepository,
+    departmentRepository,
+    memberRepository,
+    adminSummaryRepository,
+  ] = await Promise.all([
+    getServerServiceRepository(),
+    getServerReportRepository(),
+    getServerAttendanceRepository(),
+    getServerDepartmentRepository(),
+    getServerMemberRepository(),
+    getServerAdminSummaryRepository(),
+  ]);
 
   try {
-    const service = (await payload.findByID({
-      collection: "services",
-      depth: 0,
-      id: serviceID,
-      req,
-    })) as Service;
+    const service = await serviceRepository.findById(serviceID);
+    if (!service) notFound();
 
-    const [reportsResult, attendanceResult, departmentsResult, membersResult] = await Promise.all([
-      payload.find({
-        collection: "service-reports",
-        depth: 1,
-        limit: 500,
-        pagination: false,
-        req,
-        sort: "-createdAt",
-        where: {
-          service: {
-            equals: serviceID,
-          },
-        },
-      }),
-      payload.find({
-        collection: "attendance-records",
-        depth: 1,
-        limit: 5000,
-        pagination: false,
-        req,
-        where: {
-          and: [
-            {
-              date: {
-                equals: service.date,
-              },
-            },
-            {
-              present: {
-                equals: true,
-              },
-            },
-          ],
-        },
-      }),
-      payload.find({
-        collection: "departments",
-        depth: 0,
-        limit: 500,
-        pagination: false,
-        req,
-        sort: "name",
-      }),
-      payload.find({
-        collection: "members",
-        depth: 1,
-        limit: 500,
-        pagination: false,
-        req,
-        sort: "fullName",
-      }),
+    const [reports, attendanceRecords, departments, members] = await Promise.all([
+      collectAllPages(({ limit, page }) => reportRepository.list({
+        limit,
+        page,
+        serviceId: serviceID,
+      })),
+      collectAllPages(({ limit, page }) => attendanceRepository.list({
+        date: service.date,
+        limit,
+        page,
+        present: true,
+      })),
+      departmentRepository.findAll(),
+      collectAllPages(({ limit, page }) => memberRepository.list({ limit, page })),
     ]);
-
-    const reports = reportsResult.docs as ServiceReportWithRelations[];
-    const attendanceRecords = attendanceResult.docs as AttendanceRecordWithMember[];
-    const departments = departmentsResult.docs as Department[];
-    const members = membersResult.docs as Member[];
-    const reportsByDepartment = new Map<number, ServiceReportWithRelations>();
+    const memberById = new Map(members.map((member) => [member.id, member]));
+    const departmentNameById = new Map(
+      departments.map((department) => [department.id, department.name]),
+    );
+    const adminSummaries = await adminSummaryRepository.findByIds(
+      reports.flatMap((report) => [
+        ...(report.submittedById === null ? [] : [report.submittedById]),
+        ...(report.approvedById === null ? [] : [report.approvedById]),
+      ]),
+    );
+    const adminSummaryById = new Map(adminSummaries.map((admin) => [admin.id, admin]));
+    const reportsByDepartment = new Map<number, (typeof reports)[number]>();
 
     for (const report of reports) {
-      if (report.department && typeof report.department !== "number") {
-        reportsByDepartment.set(report.department.id, report);
-      }
+      reportsByDepartment.set(report.departmentId, report);
     }
 
     const attendanceSummary = {
@@ -144,13 +110,11 @@ export default async function ReportOverviewPage({
     const attendanceByDepartment = new Map<string, { count: number }>();
 
     for (const record of attendanceRecords) {
-      const member = record.member;
-
-      if (!member || typeof member === "number") {
-        continue;
-      }
-
-      const departmentName = getDepartmentName(member.department);
+      const member = memberById.get(record.memberId);
+      const departmentName =
+        member?.departmentId === null || member?.departmentId === undefined
+          ? "Unassigned"
+          : departmentNameById.get(member.departmentId) ?? "Unassigned";
       const counts = attendanceByDepartment.get(departmentName) ?? { count: 0 };
       counts.count += 1;
       attendanceByDepartment.set(departmentName, counts);
@@ -158,17 +122,10 @@ export default async function ReportOverviewPage({
 
     const departmentStats = departments.map((department) => {
       const totalMembers = members.filter((member) => {
-        if (!member.department || typeof member.department === "number") {
-          return false;
-        }
-
-        return member.department.id === department.id;
+        return member.departmentId === department.id;
       }).length;
       const attendanceCount = attendanceRecords.filter((record) => {
-        const member = record.member;
-        return member && typeof member !== "number" && member.department && typeof member.department !== "number"
-          ? member.department.id === department.id
-          : false;
+        return memberById.get(record.memberId)?.departmentId === department.id;
       }).length;
       const report = reportsByDepartment.get(department.id);
 
@@ -193,7 +150,10 @@ export default async function ReportOverviewPage({
               {formatDate(service.date)}
               {service.startTime ? ` at ${service.startTime}` : ""} - department reports and attendance summary.
             </p>
-            <div className={styles.actions}>
+          <div className={styles.actions}>
+            <Link className={styles.primaryButton} href={`/admin/reports/services/${service.id}/edit`}>
+              Edit Service
+            </Link>
               <Link className={styles.secondaryButton} href="/admin/reports">
                 Back To Services
               </Link>
@@ -208,6 +168,14 @@ export default async function ReportOverviewPage({
           ) : null}
           {saved === "1" ? (
             <div className={`${styles.banner} ${styles.bannerSuccess}`}>Service report submitted successfully.</div>
+          ) : null}
+          {updated === "approved" || updated === "pending" ? (
+            <div className={`${styles.banner} ${styles.bannerSuccess}`}>
+              Report marked as {updated === "approved" ? "approved" : "pending"}.
+            </div>
+          ) : null}
+          {updated === "deleted" ? (
+            <div className={`${styles.banner} ${styles.bannerSuccess}`}>Service report deleted.</div>
           ) : null}
 
           <section className={styles.panel}>
@@ -239,12 +207,14 @@ export default async function ReportOverviewPage({
                         <div className={styles.reportHeader}>
                           <div>
                             <span className={styles.serviceName}>
-                              {report.department && typeof report.department !== "number" ? report.department.name : "Department"}
+                              {departmentNameById.get(report.departmentId) ?? "Department"}
                             </span>
                             <p className={styles.reportMeta}>
-                              {report.submittedBy && typeof report.submittedBy !== "number"
-                                ? report.submittedBy.name || report.submittedBy.email || "Admin"
-                                : "Admin"}
+                              {report.submittedById === null
+                                ? "Admin"
+                                : adminSummaryById.get(report.submittedById)?.name ??
+                                  adminSummaryById.get(report.submittedById)?.email ??
+                                  "Admin"}
                             </p>
                           </div>
                           <div className={styles.actions}>
@@ -261,11 +231,44 @@ export default async function ReportOverviewPage({
 
                         <div className={styles.reportBody}>{report.reportContent}</div>
 
+                        {report.isApproved ? (
+                          <p className={styles.reportMeta}>
+                            Approved by {report.approvedById === null
+                              ? "an administrator"
+                              : adminSummaryById.get(report.approvedById)?.name
+                                ?? adminSummaryById.get(report.approvedById)?.email
+                                ?? "an administrator"}
+                            {report.approvedAt ? ` on ${formatDate(report.approvedAt)}` : ""}.
+                          </p>
+                        ) : null}
+
                         {report.attachmentUrl ? (
                           <a className={styles.ghostButton} href={report.attachmentUrl} rel="noreferrer" target="_blank">
                             Open Attachment
                           </a>
                         ) : null}
+
+                        <div className={styles.actions}>
+                          <form action={setServiceReportApproval}>
+                            <HoneypotField />
+                            <input name="reportId" type="hidden" value={report.id} />
+                            <input name="approval" type="hidden" value={report.isApproved ? "pending" : "approved"} />
+                            <button className={styles.secondaryButton} type="submit">
+                              {report.isApproved ? "Mark Pending" : "Approve Report"}
+                            </button>
+                          </form>
+                          {canDeleteReports ? (
+                            <form action={deleteServiceReport}>
+                              <HoneypotField />
+                              <input name="reportId" type="hidden" value={report.id} />
+                              <label className={styles.deleteConfirmation}>
+                                <input name="confirmDelete" required type="checkbox" value="confirmed" />
+                                Confirm deletion
+                              </label>
+                              <button className={styles.dangerButton} type="submit">Delete Report</button>
+                            </form>
+                          ) : null}
+                        </div>
                       </article>
                     ))}
                   </div>
@@ -352,7 +355,7 @@ export default async function ReportOverviewPage({
                   <h2 className={styles.panelTitle}>Migration Status</h2>
                   <p className={styles.panelText}>
                     The old Django overview also showed donations, prayer requests, testimonies, events, livestreams, and counseling. Those
-                    modules are not migrated into Payload yet, so this overview currently focuses on attendance and department reports.
+                    modules are not part of this operations portal yet, so this overview currently focuses on attendance and department reports.
                   </p>
                 </div>
               </section>

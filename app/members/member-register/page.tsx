@@ -1,6 +1,6 @@
-import configPromise from "@payload-config";
-import { getPayload } from "payload";
 import styles from "@/app/public-operations.module.css";
+import { HoneypotField } from "@/components/honeypot-field";
+import { getPublicDepartmentRepository } from "@/lib/repositories/server/public-operations.ts";
 import { registerPublicMember } from "./actions";
 
 type SearchParams = Promise<{
@@ -29,24 +29,7 @@ export default async function PublicMemberRegisterPage({
   searchParams: SearchParams;
 }) {
   const banner = getBanner(takeString((await searchParams).saved));
-  const payload = await getPayload({
-    config: configPromise,
-    key: "thenestchurch-app",
-  });
-
-  const departmentsResult = await payload.find({
-    collection: "departments",
-    depth: 0,
-    limit: 200,
-    pagination: false,
-    overrideAccess: true,
-    sort: "name",
-    where: {
-      isActive: {
-        equals: true,
-      },
-    },
-  });
+  const departments = await (await getPublicDepartmentRepository()).findActive();
 
   const todayValue = new Date().toISOString().slice(0, 10);
 
@@ -67,6 +50,7 @@ export default async function PublicMemberRegisterPage({
         <section className={styles.panel}>
           <div className={styles.panelPad}>
             <form action={registerPublicMember} className={styles.form} encType="multipart/form-data">
+              <HoneypotField />
               <div className={styles.twoCol}>
                 <div>
                   <label className={styles.fieldLabel} htmlFor="firstName">First Name</label>
@@ -105,7 +89,7 @@ export default async function PublicMemberRegisterPage({
                   <label className={styles.fieldLabel} htmlFor="department">Department</label>
                   <select className={styles.select} id="department" name="department">
                     <option value="">Select department</option>
-                    {departmentsResult.docs.map((department) => (
+                    {departments.map((department) => (
                       <option key={department.id} value={department.id}>
                         {department.name}
                       </option>
@@ -116,7 +100,7 @@ export default async function PublicMemberRegisterPage({
                   <label className={styles.fieldLabel} htmlFor="preferredDepartment">Preferred Department</label>
                   <select className={styles.select} id="preferredDepartment" name="preferredDepartment">
                     <option value="">Select preferred department</option>
-                    {departmentsResult.docs.map((department) => (
+                    {departments.map((department) => (
                       <option key={department.id} value={department.id}>
                         {department.name}
                       </option>

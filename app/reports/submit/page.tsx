@@ -1,7 +1,10 @@
-import configPromise from "@payload-config";
-import { getPayload } from "payload";
+import { ReportSubmitButton } from "@/components/report-submit-button";
 import { HoneypotField } from "@/components/honeypot-field";
-import type { ReportInstruction, ReportTemplate } from "@/payload-types";
+import {
+  getPublicDepartmentRepository,
+  getPublicReportContentRepository,
+  getPublicServiceRepository,
+} from "@/lib/repositories/server/public-operations";
 import { submitPublicServiceReport } from "./actions";
 import styles from "@/app/public-operations.module.css";
 
@@ -17,6 +20,10 @@ const getBanner = (value: string | undefined) => {
   switch (value) {
     case "1":
       return { className: `${styles.banner} ${styles.bannerSuccess}`, message: "Report submitted successfully." };
+    case "failed":
+      return { className: `${styles.banner} ${styles.bannerWarn}`, message: "The report could not be submitted. Please try again. If this continues, contact an administrator." };
+    case "forbidden":
+      return { className: `${styles.banner} ${styles.bannerWarn}`, message: "Your account could not submit this report. Sign in again or contact an administrator." };
     case "duplicate":
       return { className: `${styles.banner} ${styles.bannerWarn}`, message: "A report for that department and service already exists." };
     case "invalid":
@@ -36,67 +43,17 @@ export default async function PublicSubmitReportPage({
   const params = await searchParams;
   const banner = getBanner(takeString(params.saved));
   const requestedService = takeString(params.service) ?? "";
-  const payload = await getPayload({
-    config: configPromise,
-    key: "thenestchurch-app",
-  });
-
-  const [servicesResult, departmentsResult, instructionsResult, templatesResult] = await Promise.all([
-    payload.find({
-      collection: "services",
-      depth: 0,
-      limit: 200,
-      pagination: false,
-      overrideAccess: true,
-      sort: "-date",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "departments",
-      depth: 0,
-      limit: 200,
-      pagination: false,
-      overrideAccess: true,
-      sort: "name",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "report-instructions",
-      depth: 1,
-      limit: 100,
-      pagination: false,
-      overrideAccess: true,
-      sort: "title",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "report-templates",
-      depth: 1,
-      limit: 100,
-      pagination: false,
-      overrideAccess: true,
-      sort: "title",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
+  const [serviceRepository, departmentRepository, reportContentRepository] = await Promise.all([
+    getPublicServiceRepository(),
+    getPublicDepartmentRepository(),
+    getPublicReportContentRepository(),
   ]);
-  const instructions = instructionsResult.docs as ReportInstruction[];
-  const templates = templatesResult.docs as ReportTemplate[];
+  const [services, departments, instructions, templates] = await Promise.all([
+    serviceRepository.findActive(),
+    departmentRepository.findActive(),
+    reportContentRepository.findActiveInstructions(),
+    reportContentRepository.findActiveTemplates(),
+  ]);
   const firstTemplate = templates[0]?.content ?? "";
 
   return (
@@ -147,9 +104,9 @@ export default async function PublicSubmitReportPage({
                   <label className={styles.fieldLabel} htmlFor="service">
                     Service
                   </label>
-                  <select className={styles.select} defaultValue={requestedService} id="service" name="service">
+                  <select className={styles.select} defaultValue={requestedService} id="service" name="service" required>
                     <option value="">Select service</option>
-                    {servicesResult.docs.map((service) => (
+                    {services.map((service) => (
                       <option key={service.id} value={service.id}>
                         {service.name} · {service.date}
                       </option>
@@ -161,9 +118,9 @@ export default async function PublicSubmitReportPage({
                   <label className={styles.fieldLabel} htmlFor="department">
                     Department
                   </label>
-                  <select className={styles.select} id="department" name="department">
+                  <select className={styles.select} id="department" name="department" required>
                     <option value="">Select department</option>
-                    {departmentsResult.docs.map((department) => (
+                    {departments.map((department) => (
                       <option key={department.id} value={department.id}>
                         {department.name}
                       </option>
@@ -181,6 +138,7 @@ export default async function PublicSubmitReportPage({
                   defaultValue={firstTemplate}
                   id="reportContent"
                   name="reportContent"
+                  required
                   placeholder="Write the department report here..."
                 />
               </div>
@@ -190,14 +148,14 @@ export default async function PublicSubmitReportPage({
                   <label className={styles.fieldLabel} htmlFor="departmentAttendance">
                     Department Attendance
                   </label>
-                  <input className={styles.input} id="departmentAttendance" min={0} name="departmentAttendance" type="number" />
+                  <input className={styles.input} id="departmentAttendance" min={0} step={1} name="departmentAttendance" type="number" />
                 </div>
 
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel} htmlFor="volunteersCount">
                     Volunteers Count
                   </label>
-                  <input className={styles.input} id="volunteersCount" min={0} name="volunteersCount" type="number" />
+                  <input className={styles.input} id="volunteersCount" min={0} step={1} name="volunteersCount" type="number" />
                 </div>
               </div>
 
@@ -209,9 +167,7 @@ export default async function PublicSubmitReportPage({
               </div>
 
               <div className={styles.actions}>
-                <button className={styles.primaryButton} type="submit">
-                  Submit Report
-                </button>
+                <ReportSubmitButton className={styles.primaryButton} />
               </div>
             </form>
           </div>

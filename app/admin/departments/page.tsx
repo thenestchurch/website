@@ -1,6 +1,8 @@
 import Link from "next/link";
-import type { Department, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerMemberRepository } from "@/lib/repositories/server/members.ts";
+import { collectAllPages } from "@/lib/repositories/pagination.ts";
 import styles from "./departments.module.css";
 
 type SearchParams = Promise<{
@@ -18,31 +20,18 @@ export default async function DepartmentsPage({
   searchParams: SearchParams;
 }) {
   const query = (takeString((await searchParams).q) ?? "").trim().toLowerCase();
-  const { req } = await getAdminContext("custom-admin-departments-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const [departmentsResult, membersResult] = await Promise.all([
-    payload.find({
-      collection: "departments",
-      depth: 0,
-      limit: 500,
-      pagination: false,
-      req,
-      sort: "name",
-    }),
-    payload.find({
-      collection: "members",
-      depth: 1,
-      limit: 500,
-      pagination: false,
-      req,
-      sort: "fullName",
-    }),
+  await requireServerAdminActor(["admin", "staff"]);
+  const [departmentRepository, memberRepository] = await Promise.all([
+    getServerDepartmentRepository(),
+    getServerMemberRepository(),
   ]);
 
-  const departments = (departmentsResult.docs as Department[]).filter((department) => {
+  const [allDepartments, members] = await Promise.all([
+    departmentRepository.findAll(),
+    collectAllPages(({ limit, page }) => memberRepository.list({ limit, page })),
+  ]);
+
+  const departments = allDepartments.filter((department) => {
     if (!query) {
       return true;
     }
@@ -54,7 +43,6 @@ export default async function DepartmentsPage({
     );
   });
 
-  const members = membersResult.docs as Member[];
   const reportingChannels = new Set(
     departments.map((department) => department.reportingChannel?.trim()).filter(Boolean),
   );
@@ -67,6 +55,9 @@ export default async function DepartmentsPage({
           <h1 className={styles.title}>Department Management</h1>
           <p className={styles.lede}>Manage department structure, member groupings, and reporting channels in one place.</p>
           <div className={styles.actions}>
+            <Link className={styles.primaryButton} href="/admin/departments/new">
+              New Department
+            </Link>
             <Link className={styles.primaryButton} href="/admin/departments/report">
               Department Report
             </Link>
@@ -142,11 +133,7 @@ export default async function DepartmentsPage({
                     <tbody>
                       {departments.map((department) => {
                         const memberCount = members.filter((member) => {
-                          if (!member.department || typeof member.department === "number") {
-                            return false;
-                          }
-
-                          return member.department.id === department.id;
+                          return member.departmentId === department.id;
                         }).length;
 
                         return (

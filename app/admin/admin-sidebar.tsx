@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
-import type { Admin } from "@/payload-types";
+import type { AuthenticatedActor } from "@/lib/auth/authorization.ts";
 import { logoutAdmin } from "./actions";
 import styles from "./admin-layout.module.css";
 
@@ -13,7 +13,7 @@ type NavItem = {
 };
 
 type AdminSidebarProps = {
-  user: Admin | null;
+  user: AuthenticatedActor | null;
   navItems: NavItem[];
 };
 

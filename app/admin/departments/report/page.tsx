@@ -1,74 +1,40 @@
 import Link from "next/link";
-import type { AttendanceRecord, Department, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerMemberRepository } from "@/lib/repositories/server/members.ts";
+import { collectAllPages } from "@/lib/repositories/pagination.ts";
 import styles from "../departments.module.css";
-
-type AttendanceRecordWithMember = AttendanceRecord & {
-  member: Member;
-};
 
 export const dynamic = "force-dynamic";
 
 export default async function DepartmentReportPage() {
-  const { req } = await getAdminContext("custom-admin-department-report-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const [departmentsResult, membersResult, attendanceResult] = await Promise.all([
-    payload.find({
-      collection: "departments",
-      depth: 0,
-      limit: 500,
-      pagination: false,
-      req,
-      sort: "name",
-    }),
-    payload.find({
-      collection: "members",
-      depth: 1,
-      limit: 500,
-      pagination: false,
-      req,
-      sort: "fullName",
-    }),
-    payload.find({
-      collection: "attendance-records",
-      depth: 1,
-      limit: 5000,
-      pagination: false,
-      req,
-      where: {
-        present: {
-          equals: true,
-        },
-      },
-    }),
+  await requireServerAdminActor(["admin", "staff"]);
+  const [departmentRepository, memberRepository, attendanceRepository] = await Promise.all([
+    getServerDepartmentRepository(),
+    getServerMemberRepository(),
+    getServerAttendanceRepository(),
   ]);
 
-  const departments = departmentsResult.docs as Department[];
-  const members = membersResult.docs as Member[];
-  const attendanceRecords = attendanceResult.docs as AttendanceRecordWithMember[];
+  const [departments, members, attendanceRecords] = await Promise.all([
+    departmentRepository.findAll(),
+    collectAllPages(({ limit, page }) => memberRepository.list({ limit, page })),
+    collectAllPages(({ limit, page }) => attendanceRepository.list({ limit, page, present: true })),
+  ]);
+  const memberById = new Map(members.map((member) => [member.id, member]));
 
   const rows = departments.map((department) => {
     const departmentMembers = members.filter((member) => {
-      if (!member.department || typeof member.department === "number") {
-        return false;
-      }
-
-      return member.department.id === department.id;
+      return member.departmentId === department.id;
     });
 
     const presentMemberIDs = new Set<number>();
 
     for (const record of attendanceRecords) {
-      const member = record.member;
+      const member = memberById.get(record.memberId);
+      if (!member) continue;
 
-      if (!member || typeof member === "number" || !member.department || typeof member.department === "number") {
-        continue;
-      }
-
-      if (member.department.id === department.id) {
+      if (member.departmentId === department.id) {
         presentMemberIDs.add(member.id);
       }
     }

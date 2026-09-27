@@ -1,6 +1,9 @@
+import { ReportSubmitButton } from "@/components/report-submit-button";
 import { HoneypotField } from "@/components/honeypot-field";
-import type { Department, ReportInstruction, ReportTemplate, Service } from "@/payload-types";
-import { getDepartmentHeadContext } from "@/payload/utilities/getDepartmentHeadContext";
+import { requireServerDepartmentLeadActor } from "@/lib/auth/server-department-lead-context";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments";
+import { getServerReportContentRepository } from "@/lib/repositories/server/report-content";
+import { getServerServiceRepository } from "@/lib/repositories/server/services";
 import { submitDepartmentHeadReport } from "./actions";
 import styles from "@/app/admin/reports/reports.module.css";
 
@@ -14,6 +17,10 @@ const takeString = (value: string | string[] | undefined) =>
 
 const getBanner = (value: string | undefined) => {
   switch (value) {
+    case "failed":
+      return { className: `${styles.banner} ${styles.bannerWarn}`, message: "The report could not be submitted. Please try again. If this continues, contact an administrator." };
+    case "forbidden":
+      return { className: `${styles.banner} ${styles.bannerWarn}`, message: "Your account could not submit this report. Sign in again or contact an administrator." };
     case "duplicate":
       return {
         className: `${styles.banner} ${styles.bannerWarn}`,
@@ -44,83 +51,21 @@ export default async function DepartmentHeadSubmitReportPage({
   const params = await searchParams;
   const requestedService = takeString(params.service);
   const banner = getBanner(takeString(params.saved));
-  const { departmentID, req, user } = await getDepartmentHeadContext();
-  const payload = req.payload;
-
-  const [servicesResult, departmentsResult, instructionsResult, templatesResult] = await Promise.all([
-    payload.find({
-      collection: "services",
-      depth: 0,
-      limit: 200,
-      pagination: false,
-      req,
-      sort: "-date",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "departments",
-      depth: 0,
-      limit: 200,
-      pagination: false,
-      req,
-      sort: "name",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "report-instructions",
-      depth: 1,
-      limit: 100,
-      pagination: false,
-      req,
-      sort: "title",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "report-templates",
-      depth: 1,
-      limit: 100,
-      pagination: false,
-      req,
-      sort: "title",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
+  const actor = await requireServerDepartmentLeadActor();
+  const departmentID = actor.departmentId;
+  const [serviceRepository, departmentRepository, reportContentRepository] =
+    await Promise.all([
+      getServerServiceRepository(),
+      getServerDepartmentRepository(),
+      getServerReportContentRepository(),
+    ]);
+  const [services, selectedDepartment, instruction, templates] = await Promise.all([
+    serviceRepository.findActive(),
+    departmentRepository.findById(departmentID),
+    reportContentRepository.findInstructionForDepartment(departmentID),
+    reportContentRepository.findTemplatesForDepartment(departmentID),
   ]);
-
-  const services = servicesResult.docs as Service[];
-  const selectedDepartment = (departmentsResult.docs as Department[]).find((department) => department.id === departmentID);
-  const instructions = (instructionsResult.docs as ReportInstruction[]).filter((instruction) => {
-    if (!instruction.department || typeof instruction.department === "number") {
-      return true;
-    }
-
-    return instruction.department.id === departmentID;
-  });
-  const templates = (templatesResult.docs as ReportTemplate[]).filter((template) => {
-    if (!template.applicableDepartments || template.applicableDepartments.length === 0) {
-      return true;
-    }
-
-    return template.applicableDepartments.some((department) => {
-      const id = typeof department === "number" ? department : department.id;
-      return id === departmentID;
-    });
-  });
+  const instructions = instruction ? [instruction] : [];
   const firstTemplate = templates[0]?.content ?? "";
 
   return (
@@ -130,7 +75,7 @@ export default async function DepartmentHeadSubmitReportPage({
           <p className={styles.eyebrow}>Department Head Portal</p>
           <h1 className={styles.title}>Submit Service Report</h1>
           <p className={styles.lede}>
-            {selectedDepartment?.name ?? "Your department"} report submission for {user.name || user.email}.
+            {selectedDepartment?.name ?? "Your department"} report submission for {actor.name || actor.email}.
           </p>
         </section>
 
@@ -187,7 +132,7 @@ export default async function DepartmentHeadSubmitReportPage({
                   <label className={styles.fieldLabel} htmlFor="service">
                     Service
                   </label>
-                  <select className={styles.select} defaultValue={requestedService ?? ""} id="service" name="service">
+                  <select className={styles.select} defaultValue={requestedService ?? ""} id="service" name="service" required>
                     <option value="">Select service</option>
                     {services.map((service) => (
                       <option key={service.id} value={service.id}>
@@ -218,6 +163,7 @@ export default async function DepartmentHeadSubmitReportPage({
                     defaultValue={firstTemplate}
                     id="reportContent"
                     name="reportContent"
+                  required
                     placeholder="Summarize the department's activities, observations, highlights, and issues."
                   />
                 </div>
@@ -227,14 +173,14 @@ export default async function DepartmentHeadSubmitReportPage({
                     <label className={styles.fieldLabel} htmlFor="departmentAttendance">
                       Department Attendance
                     </label>
-                    <input className={styles.input} id="departmentAttendance" min={0} name="departmentAttendance" type="number" />
+                    <input className={styles.input} id="departmentAttendance" min={0} step={1} name="departmentAttendance" type="number" />
                   </div>
 
                   <div className={styles.fieldGroup}>
                     <label className={styles.fieldLabel} htmlFor="volunteersCount">
                       Volunteers Count
                     </label>
-                    <input className={styles.input} id="volunteersCount" min={0} name="volunteersCount" type="number" />
+                    <input className={styles.input} id="volunteersCount" min={0} step={1} name="volunteersCount" type="number" />
                   </div>
                 </div>
 
@@ -246,9 +192,7 @@ export default async function DepartmentHeadSubmitReportPage({
                 </div>
 
                 <div className={styles.actions}>
-                  <button className={styles.primaryButton} type="submit">
-                    Submit Report
-                  </button>
+                  <ReportSubmitButton className={styles.primaryButton} />
                 </div>
               </form>
             </div>

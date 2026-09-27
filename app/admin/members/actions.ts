@@ -1,37 +1,33 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
-import { isHoneypotTriggered } from "@/payload/utilities/honeypot";
+import { isHoneypotTriggered } from "@/lib/security/honeypot";
+import { validateProfileImageFile } from "@/lib/security/profile-image";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import { getServerMediaRepository } from "@/lib/repositories/server/media";
+import { getServerMemberWriteRepository } from "@/lib/repositories/server/member-writes";
 
 const takeString = (value: FormDataEntryValue | null) => (typeof value === "string" ? value : "");
 
-const createUploadedProfilePicture = async ({
-  file,
-  fullName,
-  req,
-}: {
-  file: FormDataEntryValue | null;
-  fullName: string;
-  req: Awaited<ReturnType<typeof getAdminContext>>["req"];
-}) => {
+const createUploadedProfilePicture = async (
+  file: FormDataEntryValue | null,
+  fullName: string,
+  actor: Awaited<ReturnType<typeof requireServerAdminActor>>,
+) => {
   if (!(file instanceof File) || file.size === 0) {
     return undefined;
   }
+  const validated = await validateProfileImageFile(file);
+  if (!validated) {
+    redirect("/admin/members?updated=invalid");
+  }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const media = await req.payload.create({
-    collection: "media",
-    data: {
-      alt: `${fullName || "Member"} profile picture`,
-    },
-    file: {
-      data: buffer,
-      mimetype: file.type,
-      name: file.name,
-      size: file.size,
-    },
-    req,
+  const mediaRepository = await getServerMediaRepository(actor);
+  const media = await mediaRepository.create({
+    alt: `${fullName || "Member"} profile picture`,
+    bytes: validated.bytes,
+    filename: file.name,
+    mimeType: validated.mimeType,
   });
 
   return media.id;
@@ -53,18 +49,8 @@ export async function markMemberAsRegular(formData: FormData) {
     redirect(`${returnTo}?updated=invalid`);
   }
 
-  const { req } = await getAdminContext("mark-member-as-regular-action", {
-    allowedRoles: ["admin", "staff"],
-  });
-
-  await req.payload.update({
-    collection: "members",
-    data: {
-      isNewComer: false,
-    },
-    id: memberID,
-    req,
-  });
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  await (await getServerMemberWriteRepository(actor)).markAsRegular(memberID);
 
   redirect(`${returnTo}?updated=regular`);
 }
@@ -95,47 +81,43 @@ export async function updateMemberDetails(formData: FormData) {
     return value || null;
   };
 
-  const { req } = await getAdminContext("update-member-details-action", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const profilePicture = await createUploadedProfilePicture({
-    file: formData.get("profilePicture"),
-    fullName: `${takeString(formData.get("firstName")).trim()} ${takeString(formData.get("lastName")).trim()}`.trim(),
-    req,
-  });
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const firstName = takeString(formData.get("firstName")).trim();
+  const lastName = takeString(formData.get("lastName")).trim();
+  if (!firstName || !lastName) redirect("/admin/members?updated=invalid");
+  const profilePicture = await createUploadedProfilePicture(
+    formData.get("profilePicture"),
+    `${firstName} ${lastName}`,
+    actor,
+  );
 
-  await req.payload.update({
-    collection: "members",
-    data: {
+  await (await getServerMemberWriteRepository(actor)).update(memberID, {
       company: optionalString("company"),
       dateJoined: optionalString("dateJoined"),
       dateOfBirth: optionalString("dateOfBirth"),
-      department: relationshipOrNull("department"),
+      departmentId: relationshipOrNull("department"),
       email: optionalString("email"),
       favoriteVerse: optionalString("favoriteVerse"),
-      firstName: takeString(formData.get("firstName")).trim(),
+      firstName,
       hobbies: optionalString("hobbies"),
       homeAddress: optionalString("homeAddress"),
       isNewComer: takeString(formData.get("isNewComer")) === "on",
-      lastName: takeString(formData.get("lastName")).trim(),
+      lastName,
       maritalStatus: optionalString("maritalStatus"),
       middleName: optionalString("middleName"),
       nationality: optionalString("nationality"),
       nickname: optionalString("nickname"),
       occupation: optionalString("occupation"),
       phoneNumber: optionalString("phoneNumber"),
-      preferredDepartment: relationshipOrNull("preferredDepartment"),
+      preferredDepartmentId: relationshipOrNull("preferredDepartment"),
       role: optionalString("role"),
       skills: optionalString("skills"),
       tribe: optionalString("tribe"),
       whatsappNumber: optionalString("whatsappNumber"),
       facebookHandle: optionalString("facebookHandle"),
       instagramHandle: optionalString("instagramHandle"),
-      ...(profilePicture ? { profilePicture } : {}),
+      ...(profilePicture ? { profilePictureId: profilePicture } : {}),
       xHandle: optionalString("xHandle"),
-    },
-    id: memberID,
-    req,
   });
 
   redirect(`/admin/members/${memberID}?updated=1`);

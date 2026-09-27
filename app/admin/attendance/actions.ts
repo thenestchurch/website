@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import type { Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
-import { isHoneypotTriggered } from "@/payload/utilities/honeypot";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import type { AttendanceRegisterEntry } from "@/lib/domain/types";
+import { getServerAttendanceWriteRepository } from "@/lib/repositories/server/attendance-writes";
+import { isHoneypotTriggered } from "@/lib/security/honeypot";
 
 const buildRedirectURL = ({
   date,
@@ -23,241 +24,173 @@ const buildRedirectURL = ({
 }) => {
   const params = new URLSearchParams();
 
-  if (service) {
-    params.set("service", service);
-  }
-
-  if (date) {
-    params.set("date", date);
-  }
-
-  if (department) {
-    params.set("department", department);
-  }
-
-  if (query) {
-    params.set("query", query);
-  }
-
-  if (page) {
-    params.set("page", page);
-  }
-
+  if (service) params.set("service", service);
+  if (date) params.set("date", date);
+  if (department) params.set("department", department);
+  if (query) params.set("query", query);
+  if (page) params.set("page", page);
   params.set("saved", saved);
 
   return `/admin/attendance?${params.toString()}`;
 };
 
+const takeString = (value: FormDataEntryValue | null) =>
+  typeof value === "string" ? value : "";
+
+const positiveInteger = (value: FormDataEntryValue | null) => {
+  const parsed = Number(takeString(value));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const registerContext = (formData: FormData) => {
+  const date = takeString(formData.get("date")).trim();
+  const serviceValue = takeString(formData.get("service")).trim();
+  const serviceId = serviceValue ? positiveInteger(serviceValue) : null;
+
+  return {
+    date,
+    department: takeString(formData.get("department")),
+    page: takeString(formData.get("page")),
+    query: takeString(formData.get("query")),
+    serviceId,
+    serviceValue,
+  };
+};
+
+const invalidRegister = ({
+  date,
+  department,
+  page,
+  query,
+  serviceValue,
+}: ReturnType<typeof registerContext>) =>
+  buildRedirectURL({
+    date,
+    department,
+    page,
+    query,
+    saved: "invalid",
+    service: serviceValue || undefined,
+  });
+
+const isValidDate = (value: string) =>
+  value.length > 0 && !Number.isNaN(Date.parse(value));
+
 export const saveAttendanceRecords = async (formData: FormData) => {
   if (isHoneypotTriggered(formData)) {
-    redirect(
-      buildRedirectURL({
-        saved: "invalid",
-      }),
-    );
+    redirect(buildRedirectURL({ saved: "invalid" }));
   }
 
-  const { req } = await getAdminContext("attendance-register-save", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const service = formData.get("service");
-  const serviceID = typeof service === "string" && service ? service : undefined;
-  const dateValue = formData.get("date");
-  const date = typeof dateValue === "string" ? dateValue : "";
-  const departmentValue = formData.get("department");
-  const department = typeof departmentValue === "string" ? departmentValue : "";
-  const queryValue = formData.get("query");
-  const query = typeof queryValue === "string" ? queryValue : "";
-  const pageValue = formData.get("page");
-  const page = typeof pageValue === "string" ? pageValue : "";
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const context = registerContext(formData);
   const bulkStatusValue = formData.get("bulkStatus");
   const bulkStatus =
-    bulkStatusValue === "present" || bulkStatusValue === "absent" ? bulkStatusValue : undefined;
-  const memberIDs = formData.getAll("memberIds").filter((value): value is string => typeof value === "string");
+    bulkStatusValue === "present" || bulkStatusValue === "absent"
+      ? bulkStatusValue
+      : undefined;
+  const memberIds = [
+    ...new Set(
+      formData
+        .getAll("memberIds")
+        .map(positiveInteger)
+        .filter((value): value is number => value !== null),
+    ),
+  ];
 
-  if (!date) {
+  if (
+    !isValidDate(context.date)
+    || (context.serviceValue.length > 0 && context.serviceId === null)
+    || memberIds.length === 0
+    || memberIds.length > 100
+  ) {
     redirect(
       buildRedirectURL({
-        date,
-        department,
-        page,
-        query,
-        saved: "missing-date",
-        service: serviceID,
+        date: context.date,
+        department: context.department,
+        page: context.page,
+        query: context.query,
+        saved: context.date ? "invalid" : "missing-date",
+        service: context.serviceValue || undefined,
       }),
     );
   }
 
-  for (const memberID of memberIDs) {
-    const existingID = formData.get(`existing_${memberID}`);
-    const present = bulkStatus
-      ? bulkStatus === "present"
-      : formData.get(`present_${memberID}`) === "on";
-    const notes = formData.get(`notes_${memberID}`);
-
-    const baseData = {
-      date,
-      member: Number(memberID),
-      notes: typeof notes === "string" ? notes.trim() : "",
-      present,
-      service: serviceID ? Number(serviceID) : undefined,
+  const entries: AttendanceRegisterEntry[] = memberIds.map((memberId) => {
+    const notes = takeString(formData.get(`notes_${memberId}`)).trim();
+    return {
+      memberId,
+      notes: notes ? notes.slice(0, 5000) : null,
+      present: bulkStatus
+        ? bulkStatus === "present"
+        : formData.get(`present_${memberId}`) === "on",
     };
+  });
 
-    if (typeof existingID === "string" && existingID) {
-      await payload.update({
-        id: Number(existingID),
-        collection: "attendance-records",
-        data: baseData,
-        depth: 0,
-        req,
-      });
-
-      continue;
-    }
-
-    await payload.create({
-      collection: "attendance-records",
-      data: baseData,
-      depth: 0,
-      req,
+  try {
+    const repository = await getServerAttendanceWriteRepository(actor);
+    await repository.saveRegister({
+      date: context.date,
+      entries,
+      serviceId: context.serviceId,
     });
+  } catch {
+    redirect(invalidRegister(context));
   }
 
   revalidatePath("/admin/attendance");
   redirect(
     buildRedirectURL({
-      date,
-      department,
-      page,
-      query,
-      saved: bulkStatus === "present" ? "bulk-present" : bulkStatus === "absent" ? "bulk-absent" : "1",
-      service: serviceID,
+      date: context.date,
+      department: context.department,
+      page: context.page,
+      query: context.query,
+      saved: bulkStatus === "present"
+        ? "bulk-present"
+        : bulkStatus === "absent"
+          ? "bulk-absent"
+          : "1",
+      service: context.serviceValue || undefined,
     }),
   );
 };
 
 export const quickMarkAttendance = async (formData: FormData) => {
   if (isHoneypotTriggered(formData)) {
-    redirect(
-      buildRedirectURL({
-        saved: "invalid",
-      }),
-    );
+    redirect(buildRedirectURL({ saved: "invalid" }));
   }
 
-  const { req } = await getAdminContext("attendance-register-quick-mark", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const context = registerContext(formData);
+  const memberId = positiveInteger(formData.get("member"));
 
-  const memberValue = formData.get("member");
-  const memberID = typeof memberValue === "string" ? Number(memberValue) : Number.NaN;
-  const serviceValue = formData.get("service");
-  const serviceID = typeof serviceValue === "string" && serviceValue ? Number(serviceValue) : undefined;
-  const dateValue = formData.get("date");
-  const date = typeof dateValue === "string" ? dateValue : "";
-  const departmentValue = formData.get("department");
-  const department = typeof departmentValue === "string" ? departmentValue : "";
-  const queryValue = formData.get("query");
-  const query = typeof queryValue === "string" ? queryValue : "";
-  const pageValue = formData.get("page");
-  const page = typeof pageValue === "string" ? pageValue : "";
-
-  if (!date || !Number.isFinite(memberID)) {
-    redirect(
-      buildRedirectURL({
-        date,
-        department,
-        page,
-        query,
-        saved: "invalid",
-        service: typeof serviceValue === "string" ? serviceValue : undefined,
-      }),
-    );
+  if (
+    memberId === null
+    || !isValidDate(context.date)
+    || (context.serviceValue.length > 0 && context.serviceId === null)
+  ) {
+    redirect(invalidRegister(context));
   }
 
-  const existing = await payload.find({
-    collection: "attendance-records",
-    depth: 0,
-    limit: 1,
-    pagination: false,
-    req,
-    where: serviceID
-      ? {
-          and: [
-            {
-              member: {
-                equals: memberID,
-              },
-            },
-            {
-              service: {
-                equals: serviceID,
-              },
-            },
-          ],
-        }
-      : {
-          and: [
-            {
-              member: {
-                equals: memberID,
-              },
-            },
-            {
-              date: {
-                equals: date,
-              },
-            },
-            {
-              service: {
-                exists: false,
-              },
-            },
-          ],
-        },
-  });
-
-  if (existing.docs[0]) {
-    await payload.update({
-      id: existing.docs[0].id,
-      collection: "attendance-records",
-      data: {
-        date,
-        member: memberID,
-        present: true,
-        service: serviceID,
-      },
-      depth: 0,
-      req,
+  try {
+    const repository = await getServerAttendanceWriteRepository(actor);
+    await repository.saveRegister({
+      date: context.date,
+      entries: [{ memberId, notes: null, present: true }],
+      serviceId: context.serviceId,
     });
-  } else {
-    await payload.create({
-      collection: "attendance-records",
-      data: {
-        date,
-        member: memberID,
-        present: true,
-        service: serviceID,
-      },
-      depth: 0,
-      req,
-    });
+  } catch {
+    redirect(invalidRegister(context));
   }
 
   revalidatePath("/admin/attendance");
   redirect(
     buildRedirectURL({
-      date,
-      department,
-      page,
-      query,
+      date: context.date,
+      department: context.department,
+      page: context.page,
+      query: context.query,
       saved: "quick",
-      service: typeof serviceValue === "string" ? serviceValue : undefined,
+      service: context.serviceValue || undefined,
     }),
   );
 };
-
-export type AttendanceMemberRow = Member;

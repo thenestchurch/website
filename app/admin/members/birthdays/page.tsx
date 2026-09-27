@@ -1,6 +1,10 @@
 import Link from "next/link";
-import type { Department, Media, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import type { Member } from "@/lib/domain/types";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments";
+import { getServerMediaRepository } from "@/lib/repositories/server/media";
+import { getServerMemberRepository } from "@/lib/repositories/server/members";
+import { collectAllPages } from "@/lib/repositories/pagination";
 import styles from "../members.module.css";
 
 type SearchParams = Promise<{
@@ -24,14 +28,6 @@ const months = [
   { label: "November", value: 11 },
   { label: "December", value: 12 },
 ];
-
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "No department";
-  }
-
-  return department.name;
-};
 
 const parseMonth = (value: string | undefined) => {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -103,14 +99,6 @@ const getLagosToday = () => {
   };
 };
 
-const getMediaUrl = (media: number | Media | null | undefined) => {
-  if (!media || typeof media === "number") {
-    return null;
-  }
-
-  return media.url ?? null;
-};
-
 const getInitials = (member: Member) =>
   `${member.firstName?.[0] ?? ""}${member.lastName?.[0] ?? ""}`.toUpperCase() || "M";
 
@@ -125,27 +113,17 @@ export default async function MemberBirthdaysPage({
   const selectedMonth = parseMonth(takeString(params.month));
   const selectedMonthName = months.find((month) => month.value === selectedMonth)?.label ?? "Current Month";
   const today = getLagosToday();
-  const { req } = await getAdminContext("custom-admin-member-birthdays-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const membersResult = await payload.find({
-    collection: "members",
-    depth: 1,
-    limit: 500,
-    page: 1,
-    pagination: true,
-    req,
-    sort: "fullName",
-    where: {
-      dateOfBirth: {
-        exists: true,
-      },
-    },
-  });
-
-  const members = (membersResult.docs as Member[])
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const [memberRepository, departmentRepository, mediaRepository] = await Promise.all([
+    getServerMemberRepository(),
+    getServerDepartmentRepository(),
+    getServerMediaRepository(actor),
+  ]);
+  const [memberPage, departments] = await Promise.all([
+    collectAllPages(({ limit, page }) => memberRepository.list({ limit, page })),
+    departmentRepository.findAll(),
+  ]);
+  const members = memberPage
     .filter((member) => getBirthMonth(member.dateOfBirth) === selectedMonth)
     .sort((left, right) => {
       const leftDay = getBirthDay(left.dateOfBirth) ?? 0;
@@ -161,9 +139,14 @@ export default async function MemberBirthdaysPage({
   const pastMembers = selectedMonth === today.month
     ? members.filter((member) => (getBirthDay(member.dateOfBirth) ?? 0) < today.day)
     : [];
+  const mediaIds = [...new Set(members.map((member) => member.profilePictureId).filter((id): id is number => id !== null))];
+  const mediaAssets = await Promise.all(mediaIds.map((id) => mediaRepository.findById(id)));
+  const mediaUrls = new Map(mediaAssets.filter(Boolean).map((media) => [media!.id, media!.url]));
+  const departmentNames = new Map(departments.map((department) => [department.id, department.name]));
 
   const renderBirthdayCard = (member: Member) => {
-    const profileUrl = getMediaUrl(member.profilePicture);
+    const profileUrl = (member.profilePictureId === null ? null : mediaUrls.get(member.profilePictureId))
+      ?? member.legacyProfilePictureUrl;
 
     return (
       <article className={styles.birthdayCard} key={member.id}>
@@ -182,7 +165,9 @@ export default async function MemberBirthdaysPage({
           </div>
           <div className={styles.birthdayBadge}>{getBirthDay(member.dateOfBirth) ?? "-"}</div>
         </div>
-        <span className={`${styles.pill} ${styles.pillDark}`}>{getDepartmentName(member.department)}</span>
+        <span className={`${styles.pill} ${styles.pillDark}`}>
+          {member.departmentId === null ? "No department" : departmentNames.get(member.departmentId) ?? "No department"}
+        </span>
         <div className={styles.detailList}>
           <div className={styles.detailRow}>
             <span className={styles.detailTerm}>Email</span>
@@ -210,6 +195,9 @@ export default async function MemberBirthdaysPage({
           <div className={styles.actions}>
             <Link className={styles.primaryButton} href="/admin/members/birthdays/settings">
               Email Settings
+            </Link>
+            <Link className={styles.primaryButton} href="/admin/members/birthdays/logs">
+              Delivery Logs
             </Link>
             <Link className={styles.secondaryButton} href="/admin/members">
               Back To Members

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseEnv } from "node:util";
 
 export const loadLocalEnv = () => {
   const envFilePath = path.resolve(process.cwd(), ".env.local");
@@ -10,22 +11,7 @@ export const loadLocalEnv = () => {
 
   const envFile = fs.readFileSync(envFilePath, "utf8");
 
-  for (const line of envFile.split(/\r?\n/)) {
-    const trimmed = line.trim();
-
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const separatorIndex = trimmed.indexOf("=");
-
-    if (separatorIndex === -1) {
-      continue;
-    }
-
-    const key = trimmed.slice(0, separatorIndex).trim();
-    const value = trimmed.slice(separatorIndex + 1).trim();
-
+  for (const [key, value] of Object.entries(parseEnv(envFile))) {
     if (!(key in process.env)) {
       process.env[key] = value;
     }

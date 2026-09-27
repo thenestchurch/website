@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { HoneypotField } from "@/components/honeypot-field";
-import type { Department, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments";
+import { getServerMemberRepository } from "@/lib/repositories/server/members";
 import { updateMemberDetails } from "../../actions";
 import styles from "../../members.module.css";
 
@@ -12,13 +13,7 @@ type PageProps = {
   }>;
 };
 
-const relationshipValue = (value: number | Department | null | undefined) => {
-  if (!value || typeof value === "number") {
-    return "";
-  }
-
-  return String(value.id);
-};
+const relationshipValue = (value: number | null | undefined) => value ? String(value) : "";
 
 export const dynamic = "force-dynamic";
 
@@ -31,36 +26,18 @@ export default async function EditMemberPage({
     notFound();
   }
 
-  const { req } = await getAdminContext("custom-admin-member-edit-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
+  await requireServerAdminActor(["admin", "staff"]);
 
   try {
-    const [member, departmentsResult] = await Promise.all([
-      payload.findByID({
-        collection: "members",
-        depth: 1,
-        id: memberID,
-        req,
-      }),
-      payload.find({
-        collection: "departments",
-        depth: 0,
-        limit: 500,
-        pagination: false,
-        req,
-        sort: "name",
-        where: {
-          isActive: {
-            equals: true,
-          },
-        },
-      }),
+    const [memberRepository, departmentRepository] = await Promise.all([
+      getServerMemberRepository(),
+      getServerDepartmentRepository(),
     ]);
-
-    const memberDoc = member as Member;
-    const departments = departmentsResult.docs as Department[];
+    const [memberDoc, departments] = await Promise.all([
+      memberRepository.findById(memberID),
+      departmentRepository.findActive(),
+    ]);
+    if (!memberDoc) notFound();
 
     return (
       <main className={styles.page}>
@@ -207,7 +184,7 @@ export default async function EditMemberPage({
                     <label className={styles.fieldLabel} htmlFor="department">
                       Department
                     </label>
-                    <select className={styles.select} defaultValue={relationshipValue(memberDoc.department)} id="department" name="department">
+                    <select className={styles.select} defaultValue={relationshipValue(memberDoc.departmentId)} id="department" name="department">
                       <option value="">No department</option>
                       {departments.map((department) => (
                         <option key={department.id} value={department.id}>
@@ -222,7 +199,7 @@ export default async function EditMemberPage({
                     </label>
                     <select
                       className={styles.select}
-                      defaultValue={relationshipValue(memberDoc.preferredDepartment)}
+                      defaultValue={relationshipValue(memberDoc.preferredDepartmentId)}
                       id="preferredDepartment"
                       name="preferredDepartment"
                     >

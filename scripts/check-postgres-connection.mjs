@@ -1,13 +1,8 @@
-import { createRequire } from "node:module";
-import fs from "node:fs";
-import path from "node:path";
+import pg from "pg";
 import { loadLocalEnv } from "./_shared.mjs";
 
 loadLocalEnv();
 
-const require = createRequire(import.meta.url);
-const dbPostgresPath = fs.realpathSync(path.resolve("node_modules/@payloadcms/db-postgres"));
-const pg = require(path.resolve(dbPostgresPath, "../..", "pg"));
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL is missing.");

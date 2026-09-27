@@ -1,50 +1,25 @@
 "use server";
 
-import configPromise from "@payload-config";
 import { redirect } from "next/navigation";
-import { getPayload } from "payload";
-import { isHoneypotTriggered } from "@/payload/utilities/honeypot";
-
-const takeString = (value: FormDataEntryValue | null) => (typeof value === "string" ? value.trim() : "");
+import { reportSubmissionErrorCode } from "@/lib/validation/report-submission-error";
+import { isHoneypotTriggered } from "@/lib/security/honeypot";
+import { getPublicReportWriteRepository } from "@/lib/repositories/server/public-operations";
+import { parseServiceReportForm } from "@/lib/validation/report-forms";
 
 export async function submitPublicServiceReport(formData: FormData) {
   if (isHoneypotTriggered(formData)) {
     redirect("/reports/submit?saved=invalid");
   }
 
-  const payload = await getPayload({
-    config: configPromise,
-    key: "thenestchurch-app",
-  });
-
-  const service = Number(takeString(formData.get("service")));
-  const department = Number(takeString(formData.get("department")));
-  const title = takeString(formData.get("title"));
-  const reportContent = takeString(formData.get("reportContent"));
-  const attachmentUrl = takeString(formData.get("attachmentUrl"));
-  const departmentAttendance = Math.max(0, Number(takeString(formData.get("departmentAttendance"))) || 0);
-  const volunteersCount = Math.max(0, Number(takeString(formData.get("volunteersCount"))) || 0);
-
-  if (!Number.isFinite(service) || !Number.isFinite(department) || !reportContent) {
+  const input = parseServiceReportForm(formData);
+  if (!input) {
     redirect("/reports/submit?saved=invalid");
   }
 
   try {
-    await payload.create({
-      collection: "service-reports",
-      data: {
-        attachmentUrl: attachmentUrl || undefined,
-        department,
-        departmentAttendance,
-        reportContent,
-        service,
-        title: title || "Department service report",
-        volunteersCount,
-      },
-      overrideAccess: true,
-    });
-  } catch {
-    redirect("/reports/submit?saved=duplicate");
+    await (await getPublicReportWriteRepository()).create(input);
+  } catch (error) {
+    redirect(`/reports/submit?service=${input.serviceId}&saved=${reportSubmissionErrorCode(error)}`);
   }
 
   redirect("/reports/submit?saved=1");

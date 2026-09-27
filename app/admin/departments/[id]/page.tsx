@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Department, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerMemberRepository } from "@/lib/repositories/server/members.ts";
 import styles from "../departments.module.css";
 
 type PageProps = {
@@ -26,36 +27,25 @@ export default async function DepartmentDetailPage({
     notFound();
   }
 
-  const { req } = await getAdminContext("custom-admin-department-detail-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
+  await requireServerAdminActor(["admin", "staff"]);
+  const [departmentRepository, memberRepository] = await Promise.all([
+    getServerDepartmentRepository(),
+    getServerMemberRepository(),
+  ]);
 
   try {
     const [department, membersResult] = await Promise.all([
-      payload.findByID({
-        collection: "departments",
-        depth: 0,
-        id: departmentID,
-        req,
-      }),
-      payload.find({
-        collection: "members",
-        depth: 1,
+      departmentRepository.findById(departmentID),
+      memberRepository.list({
+        departmentId: departmentID,
         limit: 500,
-        pagination: false,
-        req,
-        sort: "fullName",
-        where: {
-          department: {
-            equals: departmentID,
-          },
-        },
+        page: 1,
       }),
     ]);
 
-    const dept = department as Department;
-    const members = membersResult.docs as Member[];
+    if (!department) notFound();
+    const dept = department;
+    const members = membersResult.docs;
 
     return (
       <main className={styles.page}>
@@ -65,6 +55,9 @@ export default async function DepartmentDetailPage({
             <h1 className={styles.title}>{dept.name}</h1>
             <p className={styles.lede}>Department information, reporting channel, and assigned member roster.</p>
             <div className={styles.actions}>
+              <Link className={styles.primaryButton} href={`/admin/departments/${dept.id}/edit`}>
+                Edit Department
+              </Link>
               <Link className={styles.secondaryButton} href="/admin/departments">
                 Back To Departments
               </Link>

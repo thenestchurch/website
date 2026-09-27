@@ -1,17 +1,17 @@
 import Link from "next/link";
 import { HoneypotField } from "@/components/honeypot-field";
-import type { AttendanceRecord, Department, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import type { Member } from "@/lib/domain/types.ts";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerMemberRepository } from "@/lib/repositories/server/members.ts";
+import { collectAllPages } from "@/lib/repositories/pagination.ts";
 import { markMemberAsRegular } from "../actions";
 import styles from "../members.module.css";
 
 type SearchParams = Promise<{
   updated?: string | string[];
 }>;
-
-type AttendanceRecordWithMember = AttendanceRecord & {
-  member: Member;
-};
 
 type CategorizedMember = {
   daysSince?: number;
@@ -21,14 +21,6 @@ type CategorizedMember = {
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
-
-  return department.name;
-};
 
 const formatDate = (value: string | null | undefined) => {
   if (!value) {
@@ -69,62 +61,34 @@ export default async function NewcomersPage({
   const params = await searchParams;
   const updated = takeString(params.updated);
   const today = new Date();
-  const { req } = await getAdminContext("custom-admin-newcomers-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const newcomersResult = await payload.find({
-    collection: "members",
-    depth: 1,
-    limit: 1000,
-    pagination: false,
-    req,
-    sort: "fullName",
-    where: {
-      isNewComer: {
-        equals: true,
-      },
-    },
-  });
-
-  const newcomers = newcomersResult.docs as Member[];
+  await requireServerAdminActor(["admin", "staff"]);
+  const [memberRepository, attendanceRepository, departmentRepository] = await Promise.all([
+    getServerMemberRepository(),
+    getServerAttendanceRepository(),
+    getServerDepartmentRepository(),
+  ]);
+  const [newcomers, departments] = await Promise.all([
+    collectAllPages(({ limit, page }) => memberRepository.list({ isNewComer: true, limit, page })),
+    departmentRepository.findAll(),
+  ]);
   const newcomerIDs = newcomers.map((member) => member.id);
-  const attendanceResult = newcomerIDs.length
-    ? await payload.find({
-        collection: "attendance-records",
-        depth: 1,
-        limit: 5000,
-        pagination: false,
-        req,
-        sort: "-date",
-        where: {
-          and: [
-            {
-              member: {
-                in: newcomerIDs,
-              },
-            },
-            {
-              present: {
-                equals: true,
-              },
-            },
-          ],
-        },
-      })
-    : { docs: [] as AttendanceRecordWithMember[] };
+  const newcomerIDSet = new Set(newcomerIDs);
+  const attendanceRecords = await collectAllPages(({ limit, page }) => attendanceRepository.list({
+    limit,
+    page,
+    present: true,
+  }));
+  const departmentNameById = new Map(
+    departments.map((department) => [department.id, department.name]),
+  );
+  const latestAttendanceByMember = new Map<number, (typeof attendanceRecords)[number]>();
 
-  const latestAttendanceByMember = new Map<number, AttendanceRecordWithMember>();
-
-  for (const record of attendanceResult.docs as AttendanceRecordWithMember[]) {
-    const member = record.member;
-
-    if (!member || typeof member === "number" || latestAttendanceByMember.has(member.id)) {
+  for (const record of attendanceRecords) {
+    if (!newcomerIDSet.has(record.memberId) || latestAttendanceByMember.has(record.memberId)) {
       continue;
     }
 
-    latestAttendanceByMember.set(member.id, record);
+    latestAttendanceByMember.set(record.memberId, record);
   }
 
   const currentNewcomers: CategorizedMember[] = [];
@@ -133,7 +97,10 @@ export default async function NewcomersPage({
 
   for (const member of newcomers) {
     const lastAttendance = latestAttendanceByMember.get(member.id);
-    const departmentName = getDepartmentName(member.department);
+    const departmentName =
+      member.departmentId === null
+        ? "Unassigned"
+        : departmentNameById.get(member.departmentId) ?? "Unassigned";
 
     if (!lastAttendance?.date) {
       currentNewcomers.push({

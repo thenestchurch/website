@@ -2,7 +2,8 @@
 
 import { randomUUID } from "node:crypto";
 import { redirect } from "next/navigation";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import { getServerBirthdaySettingsRepository } from "@/lib/repositories/server/birthday-settings";
 import { runBirthdayEmails } from "@/scripts/birthday-email-runner.mjs";
 
 const takeString = (formData: FormData, key: string) => {
@@ -17,13 +18,8 @@ export async function saveBirthdayEmailSettings(formData: FormData) {
     redirect("/admin/members/birthdays/settings?saved=invalid");
   }
 
-  const { req } = await getAdminContext("birthday-email-settings-action", {
-    allowedRoles: ["admin", "staff"],
-  });
-
-  await req.payload.updateGlobal({
-    slug: "birthday-notification-settings",
-    data: {
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  await (await getServerBirthdaySettingsRepository(actor)).update({
       adminNotificationEmails: takeString(formData, "adminNotificationEmails"),
       adminSummaryBody: takeString(formData, "adminSummaryBody"),
       adminSummarySubject: takeString(formData, "adminSummarySubject"),
@@ -31,8 +27,6 @@ export async function saveBirthdayEmailSettings(formData: FormData) {
       memberEmailBody: takeString(formData, "memberEmailBody"),
       memberEmailSubject: takeString(formData, "memberEmailSubject"),
       sendTime,
-    },
-    req,
   });
 
   redirect("/admin/members/birthdays/settings?saved=1");
@@ -52,17 +46,13 @@ const resultRedirect = (type: "daily" | "weekly", result: Awaited<ReturnType<typ
 };
 
 export async function sendDailyBirthdayEmailsNow() {
-  await getAdminContext("manual-daily-birthday-email-action", {
-    allowedRoles: ["admin", "staff"],
-  });
+  await requireServerAdminActor(["admin", "staff"]);
   const result = await runBirthdayEmails();
   resultRedirect("daily", result);
 }
 
 export async function sendWeeklyBirthdayDigestNow() {
-  await getAdminContext("manual-weekly-birthday-digest-action", {
-    allowedRoles: ["admin", "staff"],
-  });
+  await requireServerAdminActor(["admin", "staff"]);
   const result = await runBirthdayEmails({
     idempotencySuffix: randomUUID(),
     weeklySummaryOnly: true,

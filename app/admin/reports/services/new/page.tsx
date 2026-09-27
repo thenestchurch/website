@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { HoneypotField } from "@/components/honeypot-field";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
 import { createService } from "../../actions";
 import styles from "../../reports.module.css";
 
@@ -17,6 +18,7 @@ export default async function CreateServicePage({
 }: {
   searchParams: SearchParams;
 }) {
+  await requireServerAdminActor(["admin", "staff"]);
   const saved = takeString((await searchParams).saved);
 
   return (

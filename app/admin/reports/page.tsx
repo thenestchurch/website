@@ -1,64 +1,30 @@
 import Link from "next/link";
-import type { Department, Service, ServiceReport } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerReportRepository } from "@/lib/repositories/server/reports.ts";
+import { getServerServiceRepository } from "@/lib/repositories/server/services.ts";
+import { collectAllPages } from "@/lib/repositories/pagination.ts";
 import styles from "./reports.module.css";
-
-type ServiceReportWithRelations = ServiceReport & {
-  department: Department;
-  service: Service;
-};
 
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {
-  const { req } = await getAdminContext("custom-admin-reports-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const [servicesResult, departmentsResult, reportsResult] = await Promise.all([
-    payload.find({
-      collection: "services",
-      depth: 0,
-      limit: 200,
-      pagination: false,
-      req,
-      sort: "-date",
-    }),
-    payload.find({
-      collection: "departments",
-      depth: 0,
-      limit: 200,
-      pagination: false,
-      req,
-      sort: "name",
-      where: {
-        isActive: {
-          equals: true,
-        },
-      },
-    }),
-    payload.find({
-      collection: "service-reports",
-      depth: 1,
-      limit: 1000,
-      pagination: false,
-      req,
-      sort: "-createdAt",
-    }),
+  await requireServerAdminActor(["admin", "staff"]);
+  const [serviceRepository, departmentRepository, reportRepository] = await Promise.all([
+    getServerServiceRepository(),
+    getServerDepartmentRepository(),
+    getServerReportRepository(),
   ]);
 
-  const services = servicesResult.docs as Service[];
-  const departments = departmentsResult.docs as Department[];
-  const reports = reportsResult.docs as ServiceReportWithRelations[];
+  const [services, departments, reports] = await Promise.all([
+    serviceRepository.findAll(),
+    departmentRepository.findActive(),
+    collectAllPages(({ limit, page }) => reportRepository.list({ limit, page })),
+  ]);
   const reportCountByService = new Map<number, number>();
 
   for (const report of reports) {
-    if (!report.service || typeof report.service === "number") {
-      continue;
-    }
-
-    reportCountByService.set(report.service.id, (reportCountByService.get(report.service.id) ?? 0) + 1);
+    reportCountByService.set(report.serviceId, (reportCountByService.get(report.serviceId) ?? 0) + 1);
   }
 
   return (

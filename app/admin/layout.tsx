@@ -1,9 +1,8 @@
-import configPromise from "@payload-config";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { getPayload } from "payload";
-import type { Admin } from "@/payload-types";
-import { hasAdminRole, isDepartmentLeadOnly, type AdminRole } from "@/payload/utilities/adminRoles";
+import { getServerAuthenticatedActor } from "@/lib/auth/server-actor.ts";
+import { hasAnyRole, isDepartmentLeadOnly } from "@/lib/auth/authorization.ts";
+import type { AdminRole } from "@/lib/domain/types.ts";
 import { AdminSidebar } from "./admin-sidebar";
 import styles from "./admin-layout.module.css";
 
@@ -18,6 +17,11 @@ const navItems: {
     label: "Dashboard",
   },
   {
+    allowedRoles: ["admin"],
+    href: "/admin/accounts",
+    label: "Accounts",
+  },
+  {
     allowedRoles: ["admin", "staff"],
     href: "/admin/members",
     label: "Members",
@@ -26,6 +30,11 @@ const navItems: {
     allowedRoles: ["admin", "staff"],
     href: "/admin/reports",
     label: "Reports",
+  },
+  {
+    allowedRoles: ["admin", "staff"],
+    href: "/admin/report-content",
+    label: "Report Setup",
   },
   {
     allowedRoles: ["admin", "staff"],
@@ -44,23 +53,6 @@ const navItems: {
   },
 ];
 
-const getCurrentAdminUser = async (incomingHeaders: Headers) => {
-  try {
-    const payload = await getPayload({
-      config: configPromise,
-      key: "thenestchurch-app",
-    });
-    const authResult = await payload.auth({
-      canSetHeaders: false,
-      headers: new Headers(incomingHeaders),
-    });
-
-    return (authResult.user ?? null) as Admin | null;
-  } catch {
-    return null;
-  }
-};
-
 export default async function AdminLayout({
   children,
 }: {
@@ -73,7 +65,7 @@ export default async function AdminLayout({
     return <>{children}</>;
   }
 
-  const user = await getCurrentAdminUser(incomingHeaders);
+  const user = await getServerAuthenticatedActor();
 
   if (isDepartmentLeadOnly(user)) {
     redirect("/department-head/reports/submit");
@@ -81,7 +73,7 @@ export default async function AdminLayout({
 
   const visibleNavItems = user
     ? navItems
-        .filter((item) => hasAdminRole(user, item.allowedRoles))
+        .filter((item) => hasAnyRole(user, item.allowedRoles))
         .map(({ href, label }) => ({ href, label }))
     : navItems.map(({ href, label }) => ({ href, label }));
 

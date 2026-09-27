@@ -1,8 +1,12 @@
 "use server";
 
-import configPromise from "@payload-config";
 import { redirect } from "next/navigation";
-import { getPayload } from "payload";
+import { isHoneypotTriggered } from "@/lib/security/honeypot";
+import { validateProfileImageFile } from "@/lib/security/profile-image";
+import {
+  getPublicMediaRepository,
+  getPublicMemberWriteRepository,
+} from "@/lib/repositories/server/public-operations";
 
 const takeString = (value: FormDataEntryValue | null) => (typeof value === "string" ? value.trim() : "");
 
@@ -17,41 +21,29 @@ const takeOptionalRelationshipID = (value: FormDataEntryValue | null) => {
   return Number.isInteger(relationshipID) && relationshipID > 0 ? relationshipID : undefined;
 };
 
-const createUploadedProfilePicture = async ({
-  file,
-  fullName,
-  payload,
-}: {
-  file: FormDataEntryValue | null;
-  fullName: string;
-  payload: Awaited<ReturnType<typeof getPayload>>;
-}) => {
+const createUploadedProfilePicture = async (file: FormDataEntryValue | null, fullName: string) => {
   if (!(file instanceof File) || file.size === 0) {
     return undefined;
   }
+  const validated = await validateProfileImageFile(file);
+  if (!validated) {
+    redirect("/members/member-register?saved=invalid");
+  }
 
-  const media = await payload.create({
-    collection: "media",
-    data: {
-      alt: `${fullName || "Member"} profile picture`,
-    },
-    file: {
-      data: Buffer.from(await file.arrayBuffer()),
-      mimetype: file.type,
-      name: file.name,
-      size: file.size,
-    },
-    overrideAccess: true,
+  const media = await (await getPublicMediaRepository()).create({
+    alt: `${fullName || "Member"} profile picture`,
+    bytes: validated.bytes,
+    filename: file.name,
+    mimeType: validated.mimeType,
   });
 
   return media.id;
 };
 
 export async function registerPublicMember(formData: FormData) {
-  const payload = await getPayload({
-    config: configPromise,
-    key: "thenestchurch-app",
-  });
+  if (isHoneypotTriggered(formData)) {
+    redirect("/members/member-register?saved=invalid");
+  }
 
   const firstName = takeString(formData.get("firstName"));
   const middleName = takeString(formData.get("middleName"));
@@ -69,29 +61,24 @@ export async function registerPublicMember(formData: FormData) {
   }
 
   try {
-    const profilePicture = await createUploadedProfilePicture({
-      file: formData.get("profilePicture"),
-      fullName: `${firstName} ${lastName}`.trim(),
-      payload,
-    });
+    const profilePicture = await createUploadedProfilePicture(
+      formData.get("profilePicture"),
+      `${firstName} ${lastName}`.trim(),
+    );
 
-    await payload.create({
-      collection: "members",
-      data: {
-        dateJoined: dateJoined || undefined,
-        dateOfBirth: dateOfBirth || undefined,
-        department,
-        email: email || undefined,
-        firstName,
-        isNewComer: true,
-        lastName,
-        middleName: middleName || undefined,
-        phoneNumber: phoneNumber || undefined,
-        preferredDepartment,
-        profilePicture,
-        whatsappNumber: whatsappNumber || undefined,
-      },
-      overrideAccess: true,
+    await (await getPublicMemberWriteRepository()).create({
+      dateJoined: dateJoined || null,
+      dateOfBirth: dateOfBirth || null,
+      departmentId: department ?? null,
+      email: email || null,
+      firstName,
+      isNewComer: true,
+      lastName,
+      middleName: middleName || null,
+      phoneNumber: phoneNumber || null,
+      preferredDepartmentId: preferredDepartment ?? null,
+      profilePictureId: profilePicture ?? null,
+      whatsappNumber: whatsappNumber || null,
     });
   } catch {
     redirect("/members/member-register?saved=error");

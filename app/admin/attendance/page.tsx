@@ -1,9 +1,12 @@
 import Link from "next/link";
 import { HoneypotField } from "@/components/honeypot-field";
-import type { Where } from "payload";
 import { AdminPagination } from "@/components/admin-pagination";
-import type { AttendanceRecord, Department, Member, Service } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments";
+import { getServerMemberRepository } from "@/lib/repositories/server/members";
+import { getServerServiceRepository } from "@/lib/repositories/server/services";
+import { collectAllPages } from "@/lib/repositories/pagination";
 import { quickMarkAttendance, saveAttendanceRecords } from "./actions";
 import styles from "./page.module.css";
 
@@ -15,11 +18,6 @@ type SearchParams = Promise<{
   service?: string | string[];
   page?: string | string[];
 }>;
-
-type AttendanceRecordWithRelations = AttendanceRecord & {
-  member: Member;
-  service?: Service | number | null;
-};
 
 const takeString = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
@@ -47,102 +45,10 @@ const clampPage = (value: string | undefined) => {
   return parsed;
 };
 
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
-
-  return department.name;
-};
-
-const buildMemberWhere = ({
-  departmentID,
-  query,
-}: {
-  departmentID?: number;
-  query: string;
-}): Where | undefined => {
-  const trimmed = query.trim();
-  const conditions: Where[] = [];
-
-  if (departmentID) {
-    conditions.push({
-      department: {
-        equals: departmentID,
-      },
-    });
-  }
-
-  if (trimmed) {
-    conditions.push({
-      or: [
-        {
-          fullName: {
-            like: trimmed,
-          },
-        },
-        {
-          email: {
-            like: trimmed,
-          },
-        },
-        {
-          phoneNumber: {
-            like: trimmed,
-          },
-        },
-        {
-          whatsappNumber: {
-            like: trimmed,
-          },
-        },
-      ],
-    });
-  }
-
-  if (conditions.length === 0) {
-    return undefined;
-  }
-
-  if (conditions.length === 1) {
-    return conditions[0];
-  }
-
-  return {
-    and: conditions,
-  };
-};
-
-const buildAttendanceWhere = ({
-  date,
-  serviceID,
-}: {
-  date: string;
-  serviceID?: number;
-}): Where => {
-  if (serviceID) {
-    return {
-      service: {
-        equals: serviceID,
-      },
-    };
-  }
-
-  return {
-    and: [
-      {
-        date: {
-          equals: date,
-        },
-      },
-      {
-        service: {
-          exists: false,
-        },
-      },
-    ],
-  };
-};
+const getDepartmentName = (
+  departmentId: number | null,
+  departmentNames: ReadonlyMap<number, string>,
+) => departmentNames.get(departmentId ?? -1) ?? "Unassigned";
 
 const getStatusBanner = (saved: string | undefined) => {
   switch (saved) {
@@ -198,40 +104,21 @@ export default async function AttendanceRegisterPage({
   const pageSize = 25;
   const banner = getStatusBanner(saved);
 
-  const { req } = await getAdminContext("attendance-register-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const servicesResult = await payload.find({
-    collection: "services",
-    depth: 0,
-    limit: 24,
-    pagination: false,
-    req,
-    sort: "-date",
-    where: {
-      isActive: {
-        equals: true,
-      },
-    },
-  });
-  const departmentsResult = await payload.find({
-    collection: "departments",
-    depth: 0,
-    limit: 100,
-    pagination: false,
-    req,
-    sort: "name",
-    where: {
-      isActive: {
-        equals: true,
-      },
-    },
-  });
-
-  const services = servicesResult.docs as Service[];
-  const departments = departmentsResult.docs as Department[];
+  await requireServerAdminActor(["admin", "staff"]);
+  const [serviceRepository, departmentRepository, memberRepository, attendanceRepository] =
+    await Promise.all([
+      getServerServiceRepository(),
+      getServerDepartmentRepository(),
+      getServerMemberRepository(),
+      getServerAttendanceRepository(),
+    ]);
+  const [services, departments] = await Promise.all([
+    serviceRepository.findActive(),
+    departmentRepository.findActive(),
+  ]);
+  const departmentNames = new Map(
+    departments.map((department) => [department.id, department.name]),
+  );
   const selectedService = requestedService
     ? services.find((service) => String(service.id) === requestedService)
     : undefined;
@@ -239,82 +126,50 @@ export default async function AttendanceRegisterPage({
   const selectedDepartment = requestedDepartment
     ? departments.find((department) => String(department.id) === requestedDepartment)
     : undefined;
-  const memberWhere = buildMemberWhere({
-    departmentID: selectedDepartment?.id,
+  const members = await collectAllPages(({ limit, page }) => memberRepository.list({
+    departmentId: selectedDepartment?.id,
+    limit,
+    page,
     query,
-  });
+  }));
 
-  const membersResult = await payload.find({
-    collection: "members",
-    depth: 1,
-    limit: 1000,
-    pagination: false,
-    req,
-    sort: "fullName",
-    where: memberWhere,
-  });
-
-  const totalMembers = membersResult.docs.length;
+  const totalMembers = members.length;
   const totalPages = Math.max(1, Math.ceil(totalMembers / pageSize));
   const safePage = Math.min(currentPage, totalPages);
-  const pagedMembers = membersResult.docs.slice((safePage - 1) * pageSize, safePage * pageSize);
-  const attendanceWhere = buildAttendanceWhere({
-    date: activeDate,
-    serviceID: selectedService?.id,
-  });
-
+  const pagedMembers = members.slice((safePage - 1) * pageSize, safePage * pageSize);
   const [attendanceResult, attendanceSummary] = await Promise.all([
-    payload.find({
-      collection: "attendance-records",
-      depth: 1,
+    attendanceRepository.list({
+      ...(selectedService
+        ? { serviceId: selectedService.id }
+        : { date: activeDate, serviceId: null }),
       limit: 200,
-      pagination: false,
-      req,
-      sort: "member",
-      where: {
-        and: [
-          attendanceWhere,
-          {
-            member: {
-              in: pagedMembers.map((member) => member.id),
-            },
-          },
-        ],
-      },
+      memberIds: pagedMembers.map((member) => member.id),
+      page: 1,
     }),
-    payload.find({
-      collection: "attendance-records",
-      depth: 1,
-      limit: 5000,
-      pagination: false,
-      req,
-      where: attendanceWhere,
-    }),
+    collectAllPages(({ limit, page }) => attendanceRepository.listWithMembers({
+        ...(selectedService
+          ? { serviceId: selectedService.id }
+          : { date: activeDate, serviceId: null }),
+        limit,
+        page,
+      })),
   ]);
 
-  const attendanceByMember = new Map<number, AttendanceRecordWithRelations>();
-
-  for (const record of attendanceResult.docs as AttendanceRecordWithRelations[]) {
-    const member = record.member;
-
-    if (member && typeof member !== "number") {
-      attendanceByMember.set(member.id, record);
-    }
+  const attendanceByMember = new Map();
+  for (const record of attendanceResult.docs) {
+    attendanceByMember.set(record.memberId, record);
   }
 
   const summary = {
-    present: attendanceSummary.docs.filter((record) => record.present).length,
-    total: attendanceSummary.docs.length,
+    present: attendanceSummary.filter((record) => record.present).length,
+    total: attendanceSummary.length,
     visibleSaved: attendanceResult.docs.length,
-    visitors: attendanceSummary.docs.filter((record) => {
-      const member = record.member;
-      return typeof member !== "number" && Boolean(member.isNewComer);
-    }).length,
+    visitors: attendanceSummary.filter((record) => record.member.isNewComer).length,
   };
   const departmentSummary = new Map<string, { present: number; total: number }>();
 
   for (const member of pagedMembers) {
-    const departmentName = getDepartmentName(member.department);
+    const departmentName = getDepartmentName(member.departmentId, departmentNames);
     const existing = departmentSummary.get(departmentName) ?? { present: 0, total: 0 };
     existing.total += 1;
 
@@ -417,7 +272,7 @@ export default async function AttendanceRegisterPage({
                     <Link className={styles.secondaryButton} href="/admin/attendance/phone-export">
                       Export Phones
                     </Link>
-                    <Link className={styles.secondaryButton} href="/admin/collections/services/create">
+                    <Link className={styles.secondaryButton} href="/admin/reports/services/new">
                       New Service
                     </Link>
                   </div>
@@ -497,11 +352,11 @@ export default async function AttendanceRegisterPage({
             <div className={styles.panelPad}>
               <h2 className={styles.panelTitle}>Member Register</h2>
               <p className={styles.panelText}>
-                {membersResult.docs.length} member{membersResult.docs.length === 1 ? "" : "s"} matched. You are editing{" "}
+                {members.length} member{members.length === 1 ? "" : "s"} matched. You are editing{" "}
                 {selectedService ? selectedService.name : "a date-only register"} for {formatDateValue(activeDate)}.
               </p>
 
-              {membersResult.docs.length === 0 ? (
+              {members.length === 0 ? (
                 <div className={styles.emptyState}>No members matched the current search.</div>
               ) : (
                 <form action={saveAttendanceRecords} className={styles.batchForm}>
@@ -534,7 +389,7 @@ export default async function AttendanceRegisterPage({
                     </button>
                     <Link
                       className={styles.ghostButton}
-                      href={`/admin/collections/attendance-records?where[date][equals]=${encodeURIComponent(activeDate)}`}
+                      href={`/admin/attendance?date=${encodeURIComponent(activeDate)}`}
                     >
                       Open Raw Records
                     </Link>
@@ -578,13 +433,12 @@ export default async function AttendanceRegisterPage({
                             <tr key={member.id}>
                               <td>
                                 <input name="memberIds" type="hidden" value={member.id} />
-                                <input name={`existing_${member.id}`} type="hidden" value={record?.id ?? ""} />
                                 <span className={styles.memberName}>{member.fullName}</span>
                                 <span className={styles.memberMeta}>
                                   {member.email || member.phoneNumber || member.whatsappNumber || "No contact details"}
                                 </span>
                               </td>
-                              <td>{getDepartmentName(member.department)}</td>
+                              <td>{getDepartmentName(member.departmentId, departmentNames)}</td>
                               <td>
                                 <span
                                   className={`${styles.pill} ${record?.present ? styles.pillPresent : styles.pillMissing}`}

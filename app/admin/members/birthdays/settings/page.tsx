@@ -1,6 +1,6 @@
 import Link from "next/link";
-import type { BirthdayNotificationSetting } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import { getServerBirthdaySettingsRepository } from "@/lib/repositories/server/birthday-settings";
 import styles from "../../members.module.css";
 import {
   saveBirthdayEmailSettings,
@@ -49,13 +49,8 @@ export default async function BirthdayEmailSettingsPage({
   const recipients = takeString(params.recipients) ?? "0";
   const sent = takeString(params.sent) ?? "0";
   const weekly = takeString(params.weekly) ?? "0";
-  const { req } = await getAdminContext("birthday-email-settings-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const settings = (await req.payload.findGlobal({
-    slug: "birthday-notification-settings",
-    req,
-  })) as BirthdayNotificationSetting;
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const settings = await (await getServerBirthdaySettingsRepository(actor)).get();
 
   return (
     <main className={styles.page}>

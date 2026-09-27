@@ -1,9 +1,12 @@
 import Link from "next/link";
-import type { Where } from "payload";
 import { AdminPagination } from "@/components/admin-pagination";
-import type { AttendanceRecord, Department, Member } from "@/payload-types";
-import { hasAdminRole } from "@/payload/utilities/adminRoles";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { hasAnyRole } from "@/lib/auth/authorization";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import type { Member } from "@/lib/domain/types";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments";
+import { getServerMemberRepository } from "@/lib/repositories/server/members";
+import { collectAllPages } from "@/lib/repositories/pagination";
 import styles from "./page.module.css";
 
 type SearchParams = Promise<{
@@ -13,10 +16,6 @@ type SearchParams = Promise<{
   weeks?: string | string[];
   page?: string | string[];
 }>;
-
-type AttendanceRecordWithMember = AttendanceRecord & {
-  member: Member;
-};
 
 type AbsenteeRow = {
   departmentName: string;
@@ -69,70 +68,14 @@ const clampPage = (value: string | undefined) => {
   return parsed;
 };
 
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
+const getDepartmentName = (
+  departmentId: number | null,
+  departmentNames: ReadonlyMap<number, string>,
+) => departmentNames.get(departmentId ?? -1) ?? "Unassigned";
 
-  return department.name;
-};
-
-const buildMemberWhere = ({
-  departmentID,
-  query,
-}: {
-  departmentID?: number;
-  query: string;
-}): Where | undefined => {
-  const trimmed = query.trim();
-  const conditions: Where[] = [];
-
-  if (departmentID) {
-    conditions.push({
-      department: {
-        equals: departmentID,
-      },
-    });
-  }
-
-  if (trimmed) {
-    conditions.push({
-      or: [
-        {
-          fullName: {
-            like: trimmed,
-          },
-        },
-        {
-          email: {
-            like: trimmed,
-          },
-        },
-        {
-          phoneNumber: {
-            like: trimmed,
-          },
-        },
-        {
-          whatsappNumber: {
-            like: trimmed,
-          },
-        },
-      ],
-    });
-  }
-
-  if (conditions.length === 0) {
-    return undefined;
-  }
-
-  if (conditions.length === 1) {
-    return conditions[0];
-  }
-
-  return {
-    and: conditions,
-  };
+const parseEntityId = (value: string | undefined) => {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 };
 
 const weeksBetween = (later: Date, earlier: Date) =>
@@ -155,87 +98,48 @@ export default async function AttendanceAbsenteesPage({
   const reference = new Date(referenceDate);
   const cutoff = new Date(reference);
   cutoff.setDate(cutoff.getDate() - weeks * 7);
+  const requestedDepartmentId = parseEntityId(requestedDepartment);
 
-  const { req } = await getAdminContext("attendance-absentees-page", {
-    allowedRoles: ["admin", "staff", "absentee-viewer"],
-  });
-  const payload = req.payload;
-  const canManageAttendance = hasAdminRole(req.user, ["admin", "staff"]);
-
-  const departmentsResult = await payload.find({
-    collection: "departments",
-    depth: 0,
-    limit: 100,
-    pagination: false,
-    req,
-    sort: "name",
-    where: {
-      isActive: {
-        equals: true,
-      },
-    },
-  });
-  const membersResult = await payload.find({
-    collection: "members",
-    depth: 1,
-    limit: 1000,
-    pagination: false,
-    req,
-    sort: "fullName",
-    where: buildMemberWhere({
-      departmentID: requestedDepartment ? Number(requestedDepartment) : undefined,
+  const actor = await requireServerAdminActor(["admin", "staff", "absentee-viewer"]);
+  const canManageAttendance = hasAnyRole(actor, ["admin", "staff"]);
+  const [departmentRepository, memberRepository, attendanceRepository] = await Promise.all([
+    getServerDepartmentRepository(),
+    getServerMemberRepository(),
+    getServerAttendanceRepository(),
+  ]);
+  const [departments, members] = await Promise.all([
+    departmentRepository.findActive(),
+    collectAllPages(({ limit, page }) => memberRepository.list({
+      departmentId: requestedDepartmentId,
+      limit,
+      page,
       query,
-    }),
-  });
-
-  const departments = departmentsResult.docs as Department[];
-  const selectedDepartment = requestedDepartment
-    ? departments.find((department) => String(department.id) === requestedDepartment)
+    })),
+  ]);
+  const departmentNames = new Map(
+    departments.map((department) => [department.id, department.name]),
+  );
+  const selectedDepartment = requestedDepartmentId
+    ? departments.find((department) => department.id === requestedDepartmentId)
     : undefined;
-  const memberIDs = membersResult.docs.map((member) => member.id);
+  const attendanceRecords = await collectAllPages(({ limit, page }) => attendanceRepository.list({
+    limit,
+    page,
+    present: true,
+  }));
 
-  const attendanceResult = memberIDs.length
-    ? await payload.find({
-        collection: "attendance-records",
-        depth: 1,
-        limit: 5000,
-        pagination: false,
-        req,
-        sort: "-date",
-        where: {
-          and: [
-            {
-              present: {
-                equals: true,
-              },
-            },
-            {
-              member: {
-                in: memberIDs,
-              },
-            },
-          ],
-        },
-      })
-    : { docs: [] as AttendanceRecordWithMember[] };
-
-  const latestPresentByMember = new Map<number, AttendanceRecordWithMember>();
-
-  for (const record of attendanceResult.docs as AttendanceRecordWithMember[]) {
-    const member = record.member;
-
-    if (!member || typeof member === "number" || latestPresentByMember.has(member.id)) {
-      continue;
+  const latestPresentByMember = new Map<number, (typeof attendanceRecords)[number]>();
+  for (const record of attendanceRecords) {
+    if (!latestPresentByMember.has(record.memberId)) {
+      latestPresentByMember.set(record.memberId, record);
     }
-
-    latestPresentByMember.set(member.id, record);
   }
 
   const absenteeRows: AbsenteeRow[] = [];
 
-  for (const member of membersResult.docs) {
+  for (const member of members) {
     const lastPresent = latestPresentByMember.get(member.id);
-    const departmentName = getDepartmentName(member.department);
+    const departmentName = getDepartmentName(member.departmentId, departmentNames);
 
     if (lastPresent?.date) {
       const lastDate = new Date(lastPresent.date);
@@ -295,7 +199,7 @@ export default async function AttendanceAbsenteesPage({
     absentees: absenteeRows.length,
     neverAttended: absenteeRows.filter((row) => row.reason === "never-attended").length,
     thresholdWeeks: weeks,
-    totalMembers: membersResult.docs.length,
+    totalMembers: members.length,
   };
 
   const departmentBreakdown = [...absenteeRows.reduce((map, row) => {
@@ -478,11 +382,11 @@ export default async function AttendanceAbsenteesPage({
                 <div className={styles.actions}>
                   <Link
                     className={styles.ghostButton}
-                    href={`/admin/collections/attendance-records?where[present][equals]=true`}
+                    href="/admin/attendance"
                   >
                     Open Attendance Records
                   </Link>
-                  <Link className={styles.ghostButton} href="/admin/collections/members">
+                  <Link className={styles.ghostButton} href="/admin/members">
                     Open Members
                   </Link>
                 </div>

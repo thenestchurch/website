@@ -1,8 +1,9 @@
 import Link from "next/link";
-import type { Where } from "payload";
 import { AdminPagination } from "@/components/admin-pagination";
-import type { Department, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerMemberRepository } from "@/lib/repositories/server/members.ts";
+import { collectAllPages } from "@/lib/repositories/pagination.ts";
 import styles from "./members.module.css";
 
 type SearchParams = Promise<{
@@ -13,72 +14,6 @@ type SearchParams = Promise<{
 
 const takeString = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
-
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
-
-  return department.name;
-};
-
-const buildMemberWhere = ({
-  departmentID,
-  query,
-}: {
-  departmentID?: number;
-  query: string;
-}): Where | undefined => {
-  const trimmed = query.trim();
-  const conditions: Where[] = [];
-
-  if (departmentID) {
-    conditions.push({
-      department: {
-        equals: departmentID,
-      },
-    });
-  }
-
-  if (trimmed) {
-    conditions.push({
-      or: [
-        {
-          firstName: {
-            like: trimmed,
-          },
-        },
-        {
-          lastName: {
-            like: trimmed,
-          },
-        },
-        {
-          fullName: {
-            like: trimmed,
-          },
-        },
-        {
-          email: {
-            like: trimmed,
-          },
-        },
-      ],
-    });
-  }
-
-  if (conditions.length === 0) {
-    return undefined;
-  }
-
-  if (conditions.length === 1) {
-    return conditions[0];
-  }
-
-  return {
-    and: conditions,
-  };
-};
 
 const clampPage = (value: string | undefined) => {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -102,44 +37,25 @@ export default async function MembersPage({
   const requestedDepartment = takeString(params.department);
   const currentPage = clampPage(takeString(params.page));
   const pageSize = 25;
-  const { req } = await getAdminContext("custom-admin-members-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const departmentsResult = await payload.find({
-    collection: "departments",
-    depth: 0,
-    limit: 100,
-    pagination: false,
-    req,
-    sort: "name",
-    where: {
-      isActive: {
-        equals: true,
-      },
-    },
-  });
-
-  const departments = departmentsResult.docs as Department[];
+  await requireServerAdminActor(["admin", "staff"]);
+  const [departmentRepository, memberRepository] = await Promise.all([
+    getServerDepartmentRepository(),
+    getServerMemberRepository(),
+  ]);
+  const departments = await departmentRepository.findActive();
+  const departmentNameById = new Map(
+    departments.map((department) => [department.id, department.name]),
+  );
   const selectedDepartment = requestedDepartment
     ? departments.find((department) => String(department.id) === requestedDepartment)
     : undefined;
 
-  const membersResult = await payload.find({
-    collection: "members",
-    depth: 1,
-    limit: 1000,
-    pagination: false,
-    req,
-    sort: "fullName",
-    where: buildMemberWhere({
-      departmentID: selectedDepartment?.id,
-      query,
-    }),
-  });
-
-  const members = membersResult.docs as Member[];
+  const members = await collectAllPages(({ limit, page }) => memberRepository.list({
+    departmentId: selectedDepartment?.id,
+    limit,
+    page,
+    query,
+  }));
   const totalMembers = members.length;
   const totalPages = Math.max(1, Math.ceil(totalMembers / pageSize));
   const safePage = Math.min(currentPage, totalPages);
@@ -295,7 +211,11 @@ export default async function MembersPage({
                             </span>
                           </td>
                           <td>{member.email || member.phoneNumber || member.whatsappNumber || "No contact details"}</td>
-                          <td>{getDepartmentName(member.department)}</td>
+                          <td>{
+                            member.departmentId === null
+                              ? "Unassigned"
+                              : departmentNameById.get(member.departmentId) ?? "Unassigned"
+                          }</td>
                           <td>
                             <span
                               className={`${styles.pill} ${member.isNewComer ? styles.pillGold : styles.pillDark}`}

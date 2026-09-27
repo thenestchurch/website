@@ -181,7 +181,8 @@
   color: #a8700f;
 }
 
-.input {
+.input,
+.textarea {
   background-color: #ffffff;
   border: 1px solid rgba(23, 23, 23, 0.12);
   border-radius: 12px;
@@ -192,7 +193,14 @@
   min-height: 44px;
 }
 
-.input:focus {
+.textarea {
+  min-height: 140px;
+  padding: 12px 14px;
+  resize: vertical;
+}
+
+.input:focus,
+.textarea:focus {
   outline: none;
   border-color: #d19a21;
   box-shadow: 0 0 0 3px rgba(209, 154, 33, 0.08);

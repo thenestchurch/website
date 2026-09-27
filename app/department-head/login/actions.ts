@@ -1,11 +1,12 @@
 "use server";
 
-import configPromise from "@payload-config";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { generatePayloadCookie, getPayload } from "payload";
-import { isDepartmentLeadOnly } from "@/payload/utilities/adminRoles";
-import { isHoneypotTriggered } from "@/payload/utilities/honeypot";
+import { getPostLoginPath } from "@/lib/auth/login-flow.ts";
+import {
+  authenticateServerCredentials,
+  logoutServerActor,
+} from "@/lib/auth/server-login.ts";
+import { isHoneypotTriggered } from "@/lib/security/honeypot";
 
 export const loginDepartmentHead = async (formData: FormData) => {
   if (isHoneypotTriggered(formData)) {
@@ -19,53 +20,24 @@ export const loginDepartmentHead = async (formData: FormData) => {
     redirect("/department-head/login?error=missing");
   }
 
+  let nextPath: string | null = null;
   try {
-    const payload = await getPayload({
-      config: configPromise,
-      key: "thenestchurch-app",
+    const actor = await authenticateServerCredentials({
+      email,
+      password,
     });
-    const result = await payload.login({
-      collection: "admins",
-      data: {
-        email,
-        password,
-      },
-    });
-    const authConfig = payload.collections.admins?.config.auth;
-
-    if (!authConfig || !result.token || !isDepartmentLeadOnly(result.user)) {
-      redirect("/department-head/login?error=invalid");
-    }
-
-    const cookieExpiration = authConfig.tokenExpiration ? new Date(Date.now() + authConfig.tokenExpiration) : undefined;
-    const payloadCookie = generatePayloadCookie({
-      collectionAuthConfig: authConfig,
-      cookiePrefix: payload.config.cookiePrefix,
-      expires: cookieExpiration,
-      returnCookieAsObject: true,
-      token: result.token,
-    });
-
-    if (payloadCookie.value) {
-      const cookieStore = await cookies();
-      const sameSite =
-        authConfig.cookies.sameSite === "None"
-          ? "none"
-          : authConfig.cookies.sameSite === "Strict"
-            ? "strict"
-            : "lax";
-
-      cookieStore.set(payloadCookie.name, payloadCookie.value, {
-        domain: authConfig.cookies.domain,
-        expires: payloadCookie.expires ? new Date(payloadCookie.expires) : undefined,
-        httpOnly: true,
-        sameSite,
-        secure: authConfig.cookies.secure || false,
-      });
-    }
+    nextPath = getPostLoginPath("department-head", actor);
   } catch {
-    redirect("/department-head/login?error=invalid");
+    nextPath = null;
   }
 
-  redirect("/department-head/reports/submit");
+  if (!nextPath) {
+    try {
+      await logoutServerActor();
+    } catch {
+      // Preserve the generic login error even if stale-session cleanup fails.
+    }
+    redirect("/department-head/login?error=invalid");
+  }
+  redirect(nextPath);
 };

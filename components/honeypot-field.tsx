@@ -1,4 +1,4 @@
-import { HONEYPOT_FIELD_NAME } from "@/payload/utilities/honeypot";
+import { HONEYPOT_FIELD_NAME } from "@/lib/security/honeypot";
 
 export function HoneypotField() {
   return (

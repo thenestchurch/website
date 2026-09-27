@@ -430,6 +430,32 @@
   border-left: 4px solid #8f1422;
 }
 
+.dangerButton {
+  background: #fff;
+  border: 1px solid rgba(182, 31, 47, 0.35);
+  border-radius: 10px;
+  color: #8f1422;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 10px 16px;
+}
+
+.dangerButton:hover {
+  background: rgba(182, 31, 47, 0.08);
+}
+
+.deleteConfirmation {
+  align-items: center;
+  color: #8f1422;
+  display: flex;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
 @keyframes fadeInUp {
   from {
     opacity: 0;

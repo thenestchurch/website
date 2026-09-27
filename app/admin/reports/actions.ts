@@ -1,53 +1,37 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
-import { isHoneypotTriggered } from "@/payload/utilities/honeypot";
-
-const takeString = (value: FormDataEntryValue | null) =>
-  typeof value === "string" ? value : "";
+import { reportSubmissionErrorCode } from "@/lib/validation/report-submission-error";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
+import { getServerReportWriteRepository } from "@/lib/repositories/server/report-writes";
+import { getServerServiceWriteRepository } from "@/lib/repositories/server/service-writes";
+import { isHoneypotTriggered } from "@/lib/security/honeypot";
+import {
+  parseServiceCreateForm,
+  parseServiceReportForm,
+} from "@/lib/validation/report-forms";
 
 export async function submitServiceReport(formData: FormData) {
   if (isHoneypotTriggered(formData)) {
     redirect("/admin/reports/submit?saved=invalid");
   }
 
-  const serviceID = Number(takeString(formData.get("service")));
-  const departmentID = Number(takeString(formData.get("department")));
-  const title = takeString(formData.get("title")).trim();
-  const reportContent = takeString(formData.get("reportContent")).trim();
-  const attachmentUrl = takeString(formData.get("attachmentUrl")).trim();
-  const departmentAttendance = Number(takeString(formData.get("departmentAttendance")) || "0");
-  const volunteersCount = Number(takeString(formData.get("volunteersCount")) || "0");
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const input = parseServiceReportForm(formData);
 
-  const { req } = await getAdminContext("submit-service-report-action", {
-    allowedRoles: ["admin", "staff"],
-  });
-
-  if (!Number.isFinite(serviceID) || !Number.isFinite(departmentID) || !reportContent) {
+  if (!input) {
     redirect("/admin/reports/submit?saved=invalid");
   }
 
   try {
-    await req.payload.create({
-      collection: "service-reports",
-      data: {
-        attachmentUrl: attachmentUrl || undefined,
-        department: departmentID,
-        departmentAttendance: Number.isFinite(departmentAttendance) ? Math.max(0, departmentAttendance) : 0,
-        reportContent,
-        service: serviceID,
-        submittedBy: req.user?.id,
-        title: title || "Department service report",
-        volunteersCount: Number.isFinite(volunteersCount) ? Math.max(0, volunteersCount) : 0,
-      },
-      req,
-    });
-  } catch {
-    redirect(`/admin/reports/submit?service=${serviceID}&saved=duplicate`);
+    const repository = await getServerReportWriteRepository(actor);
+    await repository.create(input);
+  } catch (error) {
+    redirect(`/admin/reports/submit?service=${input.serviceId}&saved=${reportSubmissionErrorCode(error)}`);
   }
 
-  redirect(`/admin/reports/${serviceID}?saved=1`);
+  redirect(`/admin/reports/${input.serviceId}?saved=1`);
 }
 
 export async function createService(formData: FormData) {
@@ -55,40 +39,77 @@ export async function createService(formData: FormData) {
     redirect("/admin/reports/services/new?saved=invalid");
   }
 
-  const takeString = (key: string) => {
-    const value = formData.get(key);
-    return typeof value === "string" ? value.trim() : "";
-  };
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const input = parseServiceCreateForm(formData);
 
-  const name = takeString("name");
-  const serviceType = takeString("serviceType");
-  const date = takeString("date");
-  const startTime = takeString("startTime");
-  const endTime = takeString("endTime");
-  const notes = takeString("notes");
-  const isActive = takeString("isActive") === "on";
-
-  if (!name || !serviceType || !date) {
+  if (!input) {
     redirect("/admin/reports/services/new?saved=invalid");
   }
 
-  const { req } = await getAdminContext("create-service-action", {
-    allowedRoles: ["admin", "staff"],
+  let serviceId: number;
+  try {
+    const repository = await getServerServiceWriteRepository(actor);
+    const service = await repository.create(input);
+    serviceId = service.id;
+  } catch {
+    redirect("/admin/reports/services/new?saved=invalid");
+  }
+
+  redirect(`/admin/reports/${serviceId}?created=service`);
+}
+
+export async function updateService(formData: FormData) {
+  const serviceId = Number(formData.get("serviceId"));
+  if (!Number.isInteger(serviceId) || serviceId < 1 || isHoneypotTriggered(formData)) {
+    redirect("/admin/reports?saved=invalid");
+  }
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const input = parseServiceCreateForm(formData);
+  if (!input) redirect(`/admin/reports/services/${serviceId}/edit?saved=invalid`);
+  try {
+    await (await getServerServiceWriteRepository(actor)).update(serviceId, input);
+  } catch {
+    redirect(`/admin/reports/services/${serviceId}/edit?saved=invalid`);
+  }
+  redirect(`/admin/reports/${serviceId}?updated=service`);
+}
+
+export async function setServiceReportApproval(formData: FormData) {
+  const reportId = Number(formData.get("reportId"));
+  const approval = formData.get("approval");
+
+  if (
+    !Number.isInteger(reportId)
+    || reportId < 1
+    || (approval !== "approved" && approval !== "pending")
+    || isHoneypotTriggered(formData)
+  ) {
+    redirect("/admin/reports?saved=invalid");
+  }
+
+  const actor = await requireServerAdminActor(["admin", "staff"]);
+  const report = await (await getServerReportWriteRepository(actor)).setApproval({
+    id: reportId,
+    isApproved: approval === "approved",
   });
 
-  const service = await req.payload.create({
-    collection: "services",
-    data: {
-      date,
-      endTime: endTime || undefined,
-      isActive,
-      name,
-      notes: notes || undefined,
-      serviceType: serviceType as "sunday-service" | "midweek-service" | "prayer-meeting" | "special-program" | "other",
-      startTime: startTime || undefined,
-    },
-    req,
-  });
+  revalidatePath("/admin/reports");
+  revalidatePath(`/admin/reports/${report.serviceId}`);
+  redirect(`/admin/reports/${report.serviceId}?updated=${approval}`);
+}
 
-  redirect(`/admin/reports/${service.id}?created=service`);
+export async function deleteServiceReport(formData: FormData) {
+  const reportId = Number(formData.get("reportId"));
+  const confirmed = formData.get("confirmDelete") === "confirmed";
+
+  if (!Number.isInteger(reportId) || reportId < 1 || !confirmed || isHoneypotTriggered(formData)) {
+    redirect("/admin/reports?saved=invalid");
+  }
+
+  const actor = await requireServerAdminActor(["admin"]);
+  const report = await (await getServerReportWriteRepository(actor)).delete(reportId);
+
+  revalidatePath("/admin/reports");
+  revalidatePath(`/admin/reports/${report.serviceId}`);
+  redirect(`/admin/reports/${report.serviceId}?updated=deleted`);
 }

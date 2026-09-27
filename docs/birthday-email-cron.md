@@ -27,7 +27,6 @@ DATABASE_URL=postgresql://...
 RESEND_API_KEY=re_...
 EMAIL_FROM="The Nest Church <birthdays@updates.thenestchurch.org>"
 CRON_SECRET=GENERATE_A_LONG_RANDOM_SECRET
-PAYLOAD_ENABLE_SCHEMA_PUSH=false
 ```
 
 Generate a 32-byte secret in PowerShell:
@@ -40,7 +39,8 @@ Do not put the API key or cron secret in source control or in the cron URL query
 
 ## 3. Enable birthday notifications
 
-In Payload admin, open **Operations > Birthday Notification Settings**:
+In the custom admin, open **Admin > Birthdays > Settings** at
+`/admin/members/birthdays/settings`:
 
 - enable birthday notifications;
 - check the member subject and body;

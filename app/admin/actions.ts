@@ -1,10 +1,9 @@
 "use server";
 
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { logoutServerActor } from "@/lib/auth/server-login.ts";
 
 export async function logoutAdmin() {
-  const cookieStore = await cookies();
-  cookieStore.delete("payload-token");
+  await logoutServerActor();
   redirect("/admin/login");
 }

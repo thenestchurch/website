@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { AdminPagination } from "@/components/admin-pagination";
-import type { AttendanceRecord, Department, Member } from "@/payload-types";
-import { getAdminContext } from "@/payload/utilities/getAdminContext";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
+import type { Member } from "@/lib/domain/types.ts";
+import { getServerAttendanceRepository } from "@/lib/repositories/server/attendance.ts";
+import { getServerDepartmentRepository } from "@/lib/repositories/server/departments.ts";
+import { getServerMemberRepository } from "@/lib/repositories/server/members.ts";
+import { collectAllPages } from "@/lib/repositories/pagination.ts";
 import styles from "../members.module.css";
-
-type AttendanceRecordWithMember = AttendanceRecord & {
-  member: Member;
-};
 
 type SearchParams = Promise<{
   page?: string | string[];
@@ -20,14 +20,6 @@ type AbsenteeRow = {
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-const getDepartmentName = (department: number | Department | null | undefined) => {
-  if (!department || typeof department === "number") {
-    return "Unassigned";
-  }
-
-  return department.name;
-};
 
 const formatDate = (value: string | null | undefined) => {
   if (!value) {
@@ -71,62 +63,35 @@ export default async function MemberAbsenteesPage({
   const twoWeeksAgo = new Date(today);
   twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
 
-  const { req } = await getAdminContext("custom-admin-member-absentees-page", {
-    allowedRoles: ["admin", "staff"],
-  });
-  const payload = req.payload;
-
-  const membersResult = await payload.find({
-    collection: "members",
-    depth: 1,
-    limit: 1000,
-    pagination: false,
-    req,
-    sort: "fullName",
-    where: {
-      isNewComer: {
-        not_equals: true,
-      },
-    },
-  });
-
-  const members = membersResult.docs as Member[];
+  await requireServerAdminActor(["admin", "staff"]);
+  const [memberRepository, attendanceRepository, departmentRepository] = await Promise.all([
+    getServerMemberRepository(),
+    getServerAttendanceRepository(),
+    getServerDepartmentRepository(),
+  ]);
+  const [allMembers, departments] = await Promise.all([
+    collectAllPages(({ limit, page }) => memberRepository.list({ limit, page })),
+    departmentRepository.findAll(),
+  ]);
+  const members = allMembers.filter((member) => !member.isNewComer);
   const memberIDs = members.map((member) => member.id);
-  const attendanceResult = memberIDs.length
-    ? await payload.find({
-        collection: "attendance-records",
-        depth: 1,
-        limit: 5000,
-        pagination: false,
-        req,
-        sort: "-date",
-        where: {
-          and: [
-            {
-              member: {
-                in: memberIDs,
-              },
-            },
-            {
-              present: {
-                equals: true,
-              },
-            },
-          ],
-        },
-      })
-    : { docs: [] as AttendanceRecordWithMember[] };
+  const memberIDSet = new Set(memberIDs);
+  const attendanceRecords = await collectAllPages(({ limit, page }) => attendanceRepository.list({
+    limit,
+    page,
+    present: true,
+  }));
+  const departmentNameById = new Map(
+    departments.map((department) => [department.id, department.name]),
+  );
+  const latestAttendanceByMember = new Map<number, (typeof attendanceRecords)[number]>();
 
-  const latestAttendanceByMember = new Map<number, AttendanceRecordWithMember>();
-
-  for (const record of attendanceResult.docs as AttendanceRecordWithMember[]) {
-    const member = record.member;
-
-    if (!member || typeof member === "number" || latestAttendanceByMember.has(member.id)) {
+  for (const record of attendanceRecords) {
+    if (!memberIDSet.has(record.memberId) || latestAttendanceByMember.has(record.memberId)) {
       continue;
     }
 
-    latestAttendanceByMember.set(member.id, record);
+    latestAttendanceByMember.set(record.memberId, record);
   }
 
   const absentees: AbsenteeRow[] = [];
@@ -137,7 +102,10 @@ export default async function MemberAbsenteesPage({
     if (!lastAttendance?.date) {
       absentees.push({
         daysAbsent: null,
-        departmentName: getDepartmentName(member.department),
+        departmentName:
+          member.departmentId === null
+            ? "Unassigned"
+            : departmentNameById.get(member.departmentId) ?? "Unassigned",
         lastAttendance: null,
         member,
       });
@@ -152,7 +120,10 @@ export default async function MemberAbsenteesPage({
 
     absentees.push({
       daysAbsent: Math.max(0, Math.floor((today.getTime() - parsedDate.getTime()) / MS_PER_DAY)),
-      departmentName: getDepartmentName(member.department),
+      departmentName:
+        member.departmentId === null
+          ? "Unassigned"
+          : departmentNameById.get(member.departmentId) ?? "Unassigned",
       lastAttendance: lastAttendance.date,
       member,
     });
