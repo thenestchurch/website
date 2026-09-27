@@ -132,7 +132,7 @@ set search_path = ''
 as $$
 declare
   entry jsonb;
-  member_id integer;
+  entry_member_id integer;
   saved public.attendance_records%rowtype;
 begin
   perform private.assert_public_operation_secret(p_secret);
@@ -142,12 +142,12 @@ begin
   end if;
   for entry in select value from jsonb_array_elements(p_entries)
   loop
-    member_id := (entry ->> 'memberId')::integer;
-    if not exists (select 1 from public.members where id = member_id) then
+    entry_member_id := (entry ->> 'memberId')::integer;
+    if not exists (select 1 from public.members where id = entry_member_id) then
       raise exception 'Invalid member.';
     end if;
     insert into public.attendance_records (member_id, service_id, date, present, notes, updated_at)
-    values (member_id, null, date_trunc('day', p_date at time zone 'UTC') at time zone 'UTC', coalesce((entry ->> 'present')::boolean, false), null, now())
+    values (entry_member_id, null, date_trunc('day', p_date at time zone 'UTC') at time zone 'UTC', coalesce((entry ->> 'present')::boolean, false), null, now())
     on conflict (member_id, ((date at time zone 'UTC')::date)) where service_id is null
     do update set present = excluded.present, notes = null, updated_at = now()
     returning * into saved;
