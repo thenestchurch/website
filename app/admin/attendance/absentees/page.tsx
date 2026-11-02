@@ -230,8 +230,8 @@ export default async function AttendanceAbsenteesPage({
               <Link className={styles.secondaryButton} href="/admin/attendance">
                 Back To Register
               </Link>
-              <Link className={styles.secondaryButton} href="/admin/attendance/phone-export">
-                Export Phones
+              <Link className={styles.secondaryButton} href={`/admin/attendance/phone-export?status=absent&date=${encodeURIComponent(referenceDate)}${requestedDepartment ? `&department=${encodeURIComponent(requestedDepartment)}` : ""}`}>
+                Export Phones for This Date
               </Link>
             </div>
           ) : null}

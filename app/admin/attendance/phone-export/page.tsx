@@ -1,4 +1,7 @@
-import { getChurchDate } from "@/lib/dates/church-date";
+import { getServerMemberRepository } from "@/lib/repositories/server/members";
+import { selectAbsentMembers } from "@/lib/attendance/absent-members";
+import { ExportButtons } from "./export-buttons";
+import { getChurchDate, isCalendarDate } from "@/lib/dates/church-date";
 import Link from "next/link";
 import { AdminPagination } from "@/components/admin-pagination";
 import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
@@ -15,6 +18,7 @@ type SearchParams = Promise<{
   page?: string | string[];
   query?: string | string[];
   service?: string | string[];
+  status?: string | string[];
 }>;
 
 type PhoneExportRow = {
@@ -77,17 +81,21 @@ export default async function AttendancePhoneExportPage({
   const params = await searchParams;
   const requestedDepartment = takeString(params.department);
   const requestedService = takeString(params.service);
-  const requestedDate = takeString(params.date) ?? todayValue;
+  const dateParam = takeString(params.date) ?? "";
+  const requestedDate = isCalendarDate(dateParam) ? dateParam : todayValue;
+  const absent = takeString(params.status) === "absent";
+  const status = absent ? "absent" : "present";
   const query = takeString(params.query) ?? "";
   const currentPage = clampPage(takeString(params.page));
   const pageSize = 40;
 
   await requireServerAdminActor(["admin", "staff"]);
-  const [serviceRepository, departmentRepository, attendanceRepository] =
+  const [serviceRepository, departmentRepository, attendanceRepository, memberRepository] =
     await Promise.all([
       getServerServiceRepository(),
       getServerDepartmentRepository(),
       getServerAttendanceRepository(),
+      getServerMemberRepository(),
     ]);
   const [services, departments] = await Promise.all([
     serviceRepository.findActive(),
@@ -98,7 +106,7 @@ export default async function AttendancePhoneExportPage({
   const selectedService = requestedService
     ? services.find((service) => String(service.id) === requestedService)
     : undefined;
-  const activeDate = selectedService?.date ?? requestedDate;
+  const activeDate = selectedService?.date.slice(0, 10) ?? requestedDate;
   const selectedDepartment = requestedDepartment
     ? departments.find((department) => String(department.id) === requestedDepartment)
     : undefined;
@@ -107,16 +115,24 @@ export default async function AttendancePhoneExportPage({
     attendanceRepository.listWithMembers({
       ...(selectedService
         ? { serviceId: selectedService.id }
-        : { date: activeDate, serviceId: null }),
+        : absent ? {} : { date: activeDate, serviceId: null }),
       limit,
       page,
       present: true,
     }));
 
+  const members = absent
+    ? selectAbsentMembers(
+        await collectAllPages(({ limit, page }) => memberRepository.list({ limit, page })),
+        attendanceRecords,
+        activeDate,
+        Boolean(selectedService),
+      )
+    : attendanceRecords.map((record) => record.member);
+
   const rows = new Map<number, PhoneExportRow>();
 
-  for (const record of attendanceRecords) {
-    const member = record.member;
+  for (const member of members) {
 
     if (selectedDepartment && member.departmentId !== selectedDepartment.id) {
       continue;
@@ -161,7 +177,7 @@ export default async function AttendancePhoneExportPage({
           <p className={styles.eyebrow}>Internal Operations</p>
           <h1 className={styles.title}>Attendance Phone Export</h1>
           <p className={styles.lede}>
-            Export only the phone contacts for members marked present on the selected service or date.
+            Export phone contacts for members who attended or missed the selected service or date.
           </p>
         </section>
 
@@ -170,14 +186,22 @@ export default async function AttendancePhoneExportPage({
             <section className={styles.panel}>
               <div className={styles.panelPad}>
                 <h2 className={styles.panelTitle}>Export Filters</h2>
-                <p className={styles.panelText}>Use the same attendance filters, but return contacts only for members marked present.</p>
+                <p className={styles.panelText}>Choose Absent to contact members with no present attendance for your selected day or service.</p>
                 <form action="/admin/attendance/phone-export" className={styles.filterForm} method="get">
+                  <div className={styles.fieldGroup}>
+                    <label className={styles.fieldLabel} htmlFor="status">Attendance</label>
+                    <select className={styles.select} defaultValue={status} id="status" name="status">
+                      <option value="absent">Absent — did not attend</option>
+                      <option value="present">Present — attended</option>
+                    </select>
+                  </div>
+
                   <div className={styles.fieldGroup}>
                     <label className={styles.fieldLabel} htmlFor="service">
                       Service
                     </label>
                     <select className={styles.select} defaultValue={requestedService ?? ""} id="service" name="service">
-                      <option value="">Date-only register</option>
+                      <option value="">{absent ? "All attendance on selected date" : "Date-only register"}</option>
                       {services.map((service) => (
                         <option key={service.id} value={service.id}>
                           {service.name} - {service.date}
@@ -243,7 +267,7 @@ export default async function AttendancePhoneExportPage({
                   </div>
                   <div className={styles.statCard}>
                     <span className={styles.statLabel}>Selected Service</span>
-                    <span className={styles.statValue}>{selectedService?.name ?? "Date-only"}</span>
+                    <span className={styles.statValue}>{selectedService?.name ?? (absent ? "All services on date" : "Date-only")}</span>
                   </div>
                   <div className={styles.statCard}>
                     <span className={styles.statLabel}>Department Filter</span>
@@ -266,13 +290,15 @@ export default async function AttendancePhoneExportPage({
             <div className={styles.panelPad}>
               <h2 className={styles.panelTitle}>Phone Number Export</h2>
               <p className={styles.panelText}>
-                Only members marked present on {formatDateValue(activeDate)} are included here.
+                {absent ? "Members with no present attendance" : "Members marked present"} on {formatDateValue(activeDate)} are included here.
+                {absent ? " Members who joined after this date are excluded. Complete attendance marking before exporting." : ""}
               </p>
 
               {exportRows.length === 0 ? (
-                <div className={styles.emptyState}>No present members with phone numbers matched the current filters.</div>
+                <div className={styles.emptyState}>No {status} members with phone numbers matched the current filters.</div>
               ) : (
                 <>
+                  <ExportButtons rows={exportRows} numbers={lineSeparatedNumbers} filename={`${status}-member-phones-${activeDate.slice(0, 10)}`} />
                   <div className={styles.exportGrid}>
                     <section className={styles.exportCard}>
                       <h3 className={styles.exportTitle}>Comma-separated numbers</h3>
@@ -294,6 +320,7 @@ export default async function AttendancePhoneExportPage({
                       department: requestedDepartment ?? "",
                       query,
                       service: requestedService ?? "",
+                      status,
                     }}
                     totalItems={exportRows.length}
                   />
