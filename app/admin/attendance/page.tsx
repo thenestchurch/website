@@ -1,3 +1,4 @@
+import { getChurchDate } from "@/lib/dates/church-date";
 import Link from "next/link";
 import { HoneypotField } from "@/components/honeypot-field";
 import { AdminPagination } from "@/components/admin-pagination";
@@ -34,7 +35,6 @@ const formatDateValue = (value: string) => {
   }).format(parsed);
 };
 
-const todayValue = new Date().toISOString().slice(0, 10);
 const clampPage = (value: string | undefined) => {
   const parsed = Number.parseInt(value ?? "", 10);
 
@@ -94,6 +94,7 @@ export default async function AttendanceRegisterPage({
 }: {
   searchParams: SearchParams;
 }) {
+  const todayValue = getChurchDate();
   const params = await searchParams;
   const requestedDepartment = takeString(params.department);
   const requestedService = takeString(params.service);

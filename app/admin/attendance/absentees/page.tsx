@@ -1,3 +1,4 @@
+import { getChurchDate } from "@/lib/dates/church-date";
 import Link from "next/link";
 import { AdminPagination } from "@/components/admin-pagination";
 import { hasAnyRole } from "@/lib/auth/authorization";
@@ -29,7 +30,6 @@ type AbsenteeRow = {
 const takeString = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
 
-const todayValue = new Date().toISOString().slice(0, 10);
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const formatDateValue = (value: string | null | undefined) => {
@@ -88,6 +88,7 @@ export default async function AttendanceAbsenteesPage({
 }: {
   searchParams: SearchParams;
 }) {
+  const todayValue = getChurchDate();
   const params = await searchParams;
   const requestedDepartment = takeString(params.department);
   const query = takeString(params.query) ?? "";

@@ -43,3 +43,19 @@ Production HTTP POST verification then returned `200` for both marking and
 unmarking an isolated future-date attendance record. The same record ID was
 returned for both operations, and its persisted state was checked. The single
 test record was removed immediately afterward; no real attendance was changed.
+
+## Registration attendance — 2026-11-02
+
+Applied only `0016_registration_attendance.sql` after a clean read-only audit
+and verified backup (`backups/thenestchurch-2026-11-02T09-09-21-585Z.dump`).
+The live registration function matched the reviewed original. Member and
+attendance sequences were at their respective maximum IDs before verification.
+
+Public member registration now inserts a date-only present record in the same
+transaction. The date is the current Lagos calendar day, stored at UTC midnight
+to match the attendance register convention; a historical joining date does not
+affect attendance. Existing members and attendance are unchanged.
+
+Verification under the `anon` role confirmed registration and same-day attendance
+and rejection of an invalid secret. Test rows were rolled back. Verification used
+the real ID sequences, which advanced normally despite the rollback.

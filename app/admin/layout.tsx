@@ -1,6 +1,5 @@
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { getServerAuthenticatedActor } from "@/lib/auth/server-actor.ts";
+import { requireServerAdminActor } from "@/lib/auth/server-admin-context.ts";
 import { hasAnyRole, isDepartmentLeadOnly } from "@/lib/auth/authorization.ts";
 import type { AdminRole } from "@/lib/domain/types.ts";
 import { AdminSidebar } from "./admin-sidebar";
@@ -58,14 +57,7 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const incomingHeaders = await headers();
-  const currentPath = incomingHeaders.get("x-current-path") ?? "";
-
-  if (currentPath.startsWith("/admin/login")) {
-    return <>{children}</>;
-  }
-
-  const user = await getServerAuthenticatedActor();
+  const user = await requireServerAdminActor();
 
   if (isDepartmentLeadOnly(user)) {
     redirect("/department-head/reports/submit");

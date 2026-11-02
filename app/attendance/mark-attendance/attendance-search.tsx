@@ -177,13 +177,12 @@ export function AttendanceSearch({
           <input autoComplete="off" id="companyWebsite" name="companyWebsite" tabIndex={-1} type="text" />
         </div>
         <input name="date" type="hidden" value={date} />
+        {error ? <div role="alert" className={`${styles.banner} ${styles.bannerWarn}`}>{error}</div> : null}
         <div className={styles.memberGrid}>
           {trimmed.length < 2 ? (
             <div className={styles.empty}>Type at least 2 letters to load matching members.</div>
           ) : isLoading ? (
             <div className={styles.empty}>Loading matching members...</div>
-          ) : error ? (
-            <div className={styles.empty}>{error}</div>
           ) : members.length === 0 ? (
             <div className={styles.empty}>No members matched the current search.</div>
           ) : (

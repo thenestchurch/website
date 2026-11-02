@@ -1,5 +1,5 @@
 import { HoneypotField } from "@/components/honeypot-field";
-import { PasswordField } from "@/app/admin/login/password-field";
+import { PasswordField } from "@/app/(auth)/admin/login/password-field";
 import { loginDepartmentHead } from "./actions";
 
 type SearchParams = Promise<{

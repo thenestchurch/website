@@ -1,3 +1,4 @@
+import { getChurchDate } from "@/lib/dates/church-date";
 import styles from "@/app/public-operations.module.css";
 import { AttendanceSearch } from "./attendance-search";
 
@@ -6,8 +7,6 @@ type SearchParams = Promise<{
   saved?: string | string[];
 }>;
 
-const todayValue = new Date().toISOString().slice(0, 10);
-
 export const dynamic = "force-dynamic";
 
 export default async function PublicAttendancePage({
@@ -15,6 +14,7 @@ export default async function PublicAttendancePage({
 }: {
   searchParams: SearchParams;
 }) {
+  const todayValue = getChurchDate();
   const params = await searchParams;
   const saved = Array.isArray(params.saved) ? params.saved[0] : params.saved;
   const registered = Array.isArray(params.registered) ? params.registered[0] : params.registered;
@@ -36,7 +36,10 @@ export default async function PublicAttendancePage({
             {new Intl.DateTimeFormat("en-NG", { dateStyle: "long" }).format(new Date(todayValue))}
           </div>
           {registered === "1" ? (
-            <div className={`${styles.banner} ${styles.bannerSuccess}`}>Member registered successfully.</div>
+            <div className={`${styles.banner} ${styles.bannerSuccess}`}>Member registered successfully and marked present for today.</div>
+          ) : null}
+          {saved === "invalid" ? (
+            <div className={`${styles.banner} ${styles.bannerWarn}`}>Attendance could not be saved. Please try again.</div>
           ) : null}
           {saved === "1" ? (
             <div className={`${styles.banner} ${styles.bannerSuccess}`}>Attendance saved.</div>

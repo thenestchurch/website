@@ -4,10 +4,9 @@ import { NextResponse } from "next/server";
 export async function proxy(request: NextRequest) {
   const requestHeaders = new Headers(request.headers);
   const pathname = request.nextUrl.pathname;
-  const isAdminRoute = pathname.startsWith("/admin") && !pathname.startsWith("/admin/login");
+  const isAdminRoute = (pathname === "/admin" || pathname.startsWith("/admin/")) && pathname !== "/admin/login";
 
   requestHeaders.set("x-app-section", isAdminRoute ? "admin" : "site");
-  requestHeaders.set("x-current-path", pathname);
   const hasSupabaseSessionCookie = request.cookies
     .getAll()
     .some(({ name }) => name.startsWith("sb-") && name.includes("-auth-token"));

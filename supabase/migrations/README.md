@@ -30,6 +30,9 @@ The migrations are intentionally split so additive auth linkage can be reviewed
 separately from RLS enablement. Enabling RLS before policy parity is verified
 could interrupt the application.
 
+Migration `0016` was applied on 2026-11-02 after a verified backup and audit.
+See `APPLIED.md` for its transactional registration/attendance verification.
+
 ## Public department-list cutover gate
 
 `/members/member-register` reads active departments through a narrow

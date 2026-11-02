@@ -1,3 +1,4 @@
+import { getChurchDate } from "@/lib/dates/church-date";
 import Link from "next/link";
 import { AdminPagination } from "@/components/admin-pagination";
 import { requireServerAdminActor } from "@/lib/auth/server-admin-context";
@@ -27,7 +28,6 @@ type PhoneExportRow = {
 const takeString = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
 
-const todayValue = new Date().toISOString().slice(0, 10);
 
 const clampPage = (value: string | undefined) => {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -73,6 +73,7 @@ export default async function AttendancePhoneExportPage({
 }: {
   searchParams: SearchParams;
 }) {
+  const todayValue = getChurchDate();
   const params = await searchParams;
   const requestedDepartment = takeString(params.department);
   const requestedService = takeString(params.service);

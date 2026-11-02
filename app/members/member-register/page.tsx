@@ -1,3 +1,4 @@
+import { getChurchDate } from "@/lib/dates/church-date";
 import styles from "@/app/public-operations.module.css";
 import { HoneypotField } from "@/components/honeypot-field";
 import { getPublicDepartmentRepository } from "@/lib/repositories/server/public-operations.ts";
@@ -28,10 +29,10 @@ export default async function PublicMemberRegisterPage({
 }: {
   searchParams: SearchParams;
 }) {
+  const todayValue = getChurchDate();
   const banner = getBanner(takeString((await searchParams).saved));
   const departments = await (await getPublicDepartmentRepository()).findActive();
 
-  const todayValue = new Date().toISOString().slice(0, 10);
 
   return (
     <main className={styles.page}>

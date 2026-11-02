@@ -1,3 +1,4 @@
+import { getChurchDate, isCalendarDate } from "@/lib/dates/church-date";
 import { NextResponse, type NextRequest } from "next/server";
 import { isHoneypotTriggered } from "@/lib/security/honeypot";
 import {
@@ -10,14 +11,14 @@ import {
   getPublicAttendanceWriteRepository,
 } from "@/lib/repositories/server/public-operations";
 
-const todayValue = () => new Date().toISOString().slice(0, 10);
 const takeString = (value: FormDataEntryValue | string | null) =>
   typeof value === "string" ? value.trim() : "";
-const validDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : todayValue();
+const validDate = (value: string) => !value ? getChurchDate() : isCalendarDate(value) ? value : null;
 
 export async function GET(request: NextRequest) {
   const query = takeString(request.nextUrl.searchParams.get("query"));
   const date = validDate(takeString(request.nextUrl.searchParams.get("date")));
+  if (!date) return NextResponse.json({ error: "Invalid attendance date." }, { status: 400 });
   if (query.length < 2) return NextResponse.json({ members: [] });
   if (!isValidPublicAttendanceQuery(query)) {
     return NextResponse.json({ error: "Search query is too long." }, { status: 400 });
@@ -47,7 +48,7 @@ export async function POST(request: NextRequest) {
 
   const date = validDate(takeString(formData.get("date")));
   const entries = parsePublicAttendanceEntries(formData);
-  if (!entries) return invalidResponse();
+  if (!date || !entries) return invalidResponse();
 
   try {
     const saved = await (await getPublicAttendanceWriteRepository()).saveRegister({
